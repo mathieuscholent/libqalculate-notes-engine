@@ -138,6 +138,62 @@ static char buffer[100000];
 
 void setResult(Prefix *prefix = NULL, bool update_parse = false, bool goto_input = true, size_t stack_index = 0, bool register_moved = false, bool noprint = false, bool auto_calculate = false);
 void execute_expression(bool do_mathoperation = false, MathOperation op = OPERATION_ADD, MathFunction *f = NULL, bool do_stack = false, size_t stack_index = 0, bool check_exrates = true, bool auto_calculate = false);
+
+static bool define_user_function_assignment(const string &input) {
+	size_t open = input.find('(');
+	if(open == string::npos || open == 0) return false;
+	size_t close = input.find(')', open + 1);
+	if(close == string::npos) return false;
+	size_t equals = input.find('=', close + 1);
+	if(equals == string::npos) return false;
+	for(size_t i = close + 1; i < equals; i++) if(!isspace((unsigned char) input[i])) return false;
+	string name = input.substr(0, open), params = input.substr(open + 1, close - open - 1), expr = input.substr(equals + 1);
+	remove_blank_ends(name); remove_blank_ends(params); remove_blank_ends(expr);
+	if(name.empty() || params.empty() || expr.empty() || !CALCULATOR->functionNameIsValid(name)) return false;
+	MathFunction *existing = CALCULATOR->getActiveFunction(name, true);
+	if(CALCULATOR->functionNameTaken(name) && (!existing || !existing->isLocal() || existing->subtype() != SUBTYPE_USER_FUNCTION)) return false;
+	vector<string> arguments;
+	size_t start = 0;
+	while(start <= params.length()) {
+		size_t comma = params.find(',', start);
+		string arg = params.substr(start, comma == string::npos ? string::npos : comma - start);
+		remove_blank_ends(arg);
+		if(arg.empty() || !CALCULATOR->variableNameIsValid(arg)) {
+			puts(_("Invalid function parameter."));
+			return true;
+		}
+		for(size_t i = 0; i < arguments.size(); i++) if(arguments[i] == arg) {
+			puts(_("Function parameters must be unique."));
+			return true;
+		}
+		arguments.push_back(arg);
+		if(comma == string::npos) break;
+		start = comma + 1;
+	}
+	for(size_t i = 0; i < arguments.size(); i++) {
+		char argument_letter = i < 3 ? (char) ('x' + i) : (char) ('a' + i - 3);
+		string placeholder = string("\\") + argument_letter;
+		string replaced;
+		for(size_t p = 0; p < expr.length();) {
+			size_t end = p;
+			while(end < expr.length() && (isalnum((unsigned char) expr[end]) || expr[end] == '_')) end++;
+			if(end > p && expr.substr(p, end - p) == arguments[i]) replaced += placeholder;
+			else replaced += expr.substr(p, end > p ? end - p : 1);
+			p = end > p ? end : p + 1;
+		}
+		expr = replaced;
+	}
+	MathFunction *old = existing;
+	if(old && old->isLocal() && old->subtype() == SUBTYPE_USER_FUNCTION) {
+		((UserFunction*) old)->setFormula(expr, arguments.size());
+		old->setName(name, 1);
+	} else {
+		if(CALCULATOR->functionNameTaken(name)) return false;
+		CALCULATOR->addFunction(new UserFunction("", name, expr))->setChanged(true);
+	}
+	defs_edited = 1;
+	return true;
+}
 void execute_command(int command_type, bool show_result = true, bool auto_calculate = false);
 void load_preferences();
 void save_history();
@@ -7151,7 +7207,7 @@ int main(int argc, char *argv[]) {
 				ntests++;
 			} else if(!str.empty()) {
 				expression_str = str;
-				execute_expression();
+				if(!define_user_function_assignment(str)) execute_expression();
 			}
 		}
 #ifdef HAVE_LIBREADLINE
@@ -10681,6 +10737,5 @@ bool save_defs() {
 	defs_edited = false;
 	return true;
 }
-
 
 

@@ -181,6 +181,12 @@ Example: find variables planck.
 Creates a function with the specified name and expression. Use '\\x', '\\y', '\\z', '\\a', etc. for arguments in the expression. The function is persistent unless the command is invoked from file or in result only mode.
 .br
 Example: function func1 5*\\x.
+.br
+Functions can also be defined using assignment syntax with named parameters.
+.br
+Example: f(x) = 2*x + 1.
+.br
+Example: area(width, height) = width * height.
 .PP
 .TP 8
 .B help \fI[command]\fP
