@@ -10,7 +10,7 @@ static unsigned int indentation(const std::string &line) {
 	unsigned int n = 0;
 	for(char c : line) {
 		if(c == ' ') n++;
-		else if(c == '\t') n += 4;
+		else if(c == '\t') n += 2;
 		else break;
 	}
 	return n;
@@ -65,7 +65,7 @@ bool Parser::parse(const std::vector<std::string> &lines, std::vector<Statement>
 		statement.line = i + 1;
 		stack.back().second->push_back(statement);
 		if(text.back() == ':') {
-			stack.push_back(std::make_pair(level + 4, &stack.back().second->back().body));
+			stack.push_back(std::make_pair(level + 2, &stack.back().second->back().body));
 		}
 	}
 	return true;
