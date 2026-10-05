@@ -19,6 +19,7 @@
 #include <time.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <fstream>
 #include <vector>
 #include <list>
 #include <algorithm>
@@ -37,6 +38,64 @@
 #endif
 
 #include <libqalculate/MathStructure-support.h>
+#include "QalculateScript.h"
+
+using namespace std;
+extern EvaluationOptions evalops;
+extern PrintOptions printops;
+
+static qalc_script::Executor::Environment interactive_script_environment;
+
+static bool run_script_file(const string &path, qalc_script::Executor::Environment *persistent_environment = NULL) {
+	std::ifstream input(path.c_str());
+	if(!input) {
+		fprintf(stderr, "Could not open script file: %s\n", path.c_str());
+		return false;
+	}
+	vector<string> lines;
+	string line;
+	while(std::getline(input, line)) lines.push_back(line);
+	qalc_script::Parser parser;
+	vector<qalc_script::Statement> program;
+	string error;
+	if(!parser.parse(lines, program, error)) {
+		fprintf(stderr, "Script parse error: %s\n", error.c_str());
+		return false;
+	}
+	qalc_script::Executor executor;
+	qalc_script::Executor::Evaluate evaluate = [](const string &expression, const qalc_script::Executor::Environment &environment, qalc_script::Value &value, string &error, bool display) {
+		string evaluated = expression;
+		for(qalc_script::Executor::Environment::const_iterator it = environment.begin(); it != environment.end(); ++it) {
+			string replacement = it->second.scalar;
+			if(replacement.empty()) continue;
+			size_t pos = 0;
+			while((pos = evaluated.find(it->first, pos)) != string::npos) {
+				bool left = pos == 0 || !isalnum((unsigned char) evaluated[pos - 1]) && evaluated[pos - 1] != '_';
+				size_t end = pos + it->first.length();
+				bool right = end == evaluated.length() || !isalnum((unsigned char) evaluated[end]) && evaluated[end] != '_';
+				if(left && right) { evaluated.replace(pos, it->first.length(), replacement); pos += replacement.length(); }
+				else pos = end;
+			}
+		}
+		MathStructure result;
+		MathStructure parsed;
+		CALCULATOR->calculate(&result, evaluated, 500, evalops, &parsed, NULL);
+		if(result.isUndefined()) {
+			error = "could not evaluate: " + evaluated;
+			return false;
+		}
+		value.sequence = false;
+		value.scalar = result.print(printops, false, false, TAG_TYPE_TERMINAL);
+		if(display) {
+			fputs(value.scalar.c_str(), stdout);
+			fputc('\n', stdout);
+			fflush(stdout);
+		}
+		return true;
+	};
+	if(persistent_environment) return executor.execute(program, evaluate, error, *persistent_environment) ? true : (fprintf(stderr, "Script error: %s\n", error.c_str()), false);
+	return executor.execute(program, evaluate, error) ? true : (fprintf(stderr, "Script error: %s\n", error.c_str()), false);
+}
 
 using std::string;
 using std::vector;
@@ -173,6 +232,7 @@ static bool define_user_function_assignment(const string &input) {
 	for(size_t i = 0; i < arguments.size(); i++) {
 		char argument_letter = i < 3 ? (char) ('x' + i) : (char) ('a' + i - 3);
 		string placeholder = string("\\") + argument_letter;
+		// Replace parameter names only when they form complete identifiers.
 		string replaced;
 		for(size_t p = 0; p < expr.length();) {
 			size_t end = p;
@@ -188,7 +248,11 @@ static bool define_user_function_assignment(const string &input) {
 		((UserFunction*) old)->setFormula(expr, arguments.size());
 		old->setName(name, 1);
 	} else {
-		if(CALCULATOR->functionNameTaken(name)) return false;
+		if(CALCULATOR->functionNameTaken(name)) {
+			// Keep ordinary equations such as sin(x) = ... working for
+			// built-in functions; user functions are never allowed to replace them.
+			return false;
+		}
 		CALCULATOR->addFunction(new UserFunction("", name, expr))->setChanged(true);
 	}
 	defs_edited = 1;
@@ -4400,6 +4464,7 @@ int main(int argc, char *argv[]) {
 	vector<string> set_option_strings;
 	bool calc_arg_begun = false;
 	string command_file;
+	bool script_mode = false;
 	cfile = NULL;
 	interactive_mode = false;
 	result_only = false;
@@ -4571,6 +4636,8 @@ int main(int argc, char *argv[]) {
 #endif
 			fputs("\n\t-f, -file", stdout); fputs(" ", stdout); FPUTS_UNICODE(_("FILE"), stdout); fputs("\n", stdout);
 			fputs("\t", stdout); PUTS_UNICODE(_("execute commands from a file first"));
+			fputs("\n\t--script", stdout); fputs(" ", stdout); FPUTS_UNICODE(_("FILE"), stdout); fputs("\n", stdout);
+			fputs("\t", stdout); PUTS_UNICODE(_("execute a Python-style calculation script"));
 			fputs("\n\t-h, -help\n", stdout);
 			fputs("\t", stdout); PUTS_UNICODE(_("display this help and exit"));
 			fputs("\n\t-i, -interactive\n", stdout);
@@ -4770,6 +4837,18 @@ int main(int argc, char *argv[]) {
 			} else {
 				PUTS_UNICODE(_("No option and value specified for set command."));
 			}
+		} else if(!calc_arg_begun && (svar == "--script" || svar == "--script-file")) {
+		script_mode = true;
+			if(!svalue.empty()) {
+				command_file = svalue;
+				remove_blank_ends(svalue);
+			} else if(i + 1 < argc) {
+				i++;
+				command_file = argv[i];
+				remove_blank_ends(command_file);
+			} else {
+				PUTS_UNICODE(_("No script file specified."));
+			}
 		} else if(!calc_arg_begun && (svar == "-file" || svar == "-f" || svar == "--file" || svar == "--test-file")) {
 			if(!svalue.empty()) {
 				command_file = svalue;
@@ -4944,6 +5023,11 @@ int main(int argc, char *argv[]) {
 	//reset
 	result_text = "0";
 	parsed_text = "0";
+	if(script_mode) {
+		bool success = run_script_file(command_file);
+		CALCULATOR->terminateThreads();
+		return success ? EXIT_SUCCESS : EXIT_FAILURE;
+	}
 
 	view_thread = new ViewThread;
 	command_thread = new CommandThread;
@@ -4967,7 +5051,6 @@ int main(int argc, char *argv[]) {
 			}
 		}
 	}
-
 	if(i_maxtime > 0) {
 #ifndef CLOCK_MONOTONIC
 		gettimeofday(&t_end, NULL);
@@ -5173,6 +5256,38 @@ int main(int argc, char *argv[]) {
 		if(explicit_command) str.erase(0, 1);
 		if(!unittest || str.empty() || str[0] != '\t') remove_blank_ends(str);
 		if(rpn_mode && explicit_command && str.empty()) {str = "/"; explicit_command = false;}
+		if(interactive_mode && !str.empty()) {
+			size_t assignment = str.find('=');
+			size_t value_start = assignment == string::npos ? string::npos : str.find_first_not_of(SPACES, assignment + 1);
+			bool script_assignment = value_start != string::npos && (str[value_start] == '[' || str[value_start] == '(');
+			if(script_assignment) {
+				string interactive_script = "/tmp/qalc-interactive-script.qalcscript";
+				ofstream script_output(interactive_script.c_str());
+				script_output << str << '\n';
+				script_output.close();
+				run_script_file(interactive_script, &interactive_script_environment);
+				continue;
+			}
+		}
+		if(interactive_mode && !str.empty() && str.back() == ':') {
+			vector<string> script_lines;
+			script_lines.push_back(str);
+			while(true) {
+				char *block_line = readline("... ");
+				if(!block_line || block_line[0] == '\0') {
+					if(block_line) free(block_line);
+					break;
+				}
+				script_lines.push_back(block_line);
+				free(block_line);
+			}
+			string interactive_script = "/tmp/qalc-interactive-script.qalcscript";
+			ofstream script_output(interactive_script.c_str());
+			for(const string &script_line : script_lines) script_output << script_line << '\n';
+			script_output.close();
+			run_script_file(interactive_script, &interactive_script_environment);
+			continue;
+		}
 		slen = str.length();
 		ispace = str.find_first_of(SPACES);
 #ifdef HAVE_LIBREADLINE
@@ -10737,5 +10852,3 @@ bool save_defs() {
 	defs_edited = false;
 	return true;
 }
-
-

@@ -15,7 +15,7 @@ check_PROGRAMS = threadtest
 TESTS_ENVIRONMENT = QALCULATE_DEFINITIONS_DIR=$(abs_top_builddir)/data
 TESTS = unittest threadtest
 
-qalc_SOURCES = qalc.cc
+qalc_SOURCES = qalc.cc QalculateScript.cc QalculateScript.h
 
 qalc_LDADD = \
 	@LIBXML_LIBS@ \
@@ -53,4 +53,3 @@ threadtest_LDADD = $(test_LDADD)
 
 #install-exec-local:
 #	cd $(DESTDIR)$(bindir) && rm -f qalculate; $(LN_S) @LN_QALCULATE@ qalculate
-
