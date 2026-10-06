@@ -3,23 +3,13 @@
 #include "../libqalculate/Function.h"
 
 #include <cctype>
+#include <cstdlib>
 #include <algorithm>
 #include <map>
-#include <cstdio>
-#include <cstdlib>
+#include <sstream>
 
 namespace qalc_notes {
 
-static bool notes_debug_enabled() {
-	const char *value = std::getenv("QALCULATE_NOTES_DEBUG");
-	return value && value[0] == '1';
-}
-
-static void notes_debug(const char *path, const std::string &expression, bool calculated, bool undefined, bool unknowns) {
-	if(!notes_debug_enabled()) return;
-	std::fprintf(stderr, "[notes-debug] path=%s unknowns=%s calculated=%s undefined=%s expression=%s\n",
-		path, unknowns ? "on" : "off", calculated ? "yes" : "no", undefined ? "yes" : "no", expression.c_str());
-}
 
 static unsigned int first_body_line(const qalc_script::Statement &statement) {
 	if(statement.body.empty()) return statement.line;
@@ -66,6 +56,173 @@ static bool contains_identifier(const std::string &expression, const std::string
 		const bool right = end == expression.size() || !(std::isalnum(static_cast<unsigned char>(expression[end])) || expression[end] == '_');
 		if(left && right) return true;
 		position = end;
+	}
+	return false;
+}
+
+static std::string trim_copy(const std::string &value) {
+	const size_t first = value.find_first_not_of(" \t");
+	if(first == std::string::npos) return "";
+	const size_t last = value.find_last_not_of(" \t");
+	return value.substr(first, last - first + 1);
+}
+
+static bool split_top_level(const std::string &text, std::vector<std::string> &parts) {
+	int depth = 0;
+	size_t start = 0;
+	for(size_t i = 0; i < text.size(); ++i) {
+		if(text[i] == '[' || text[i] == '(') ++depth;
+		else if(text[i] == ']' || text[i] == ')') --depth;
+		else if(text[i] == ',' && depth == 0) {
+			parts.push_back(trim_copy(text.substr(start, i - start)));
+			start = i + 1;
+		}
+	}
+	if(depth != 0) return false;
+	if(!text.empty() || start != 0) parts.push_back(trim_copy(text.substr(start)));
+	return true;
+}
+
+static bool vector_literal(const std::string &text, std::vector<std::string> &items) {
+	const std::string value = trim_copy(text);
+	if(value.size() < 2 || value.front() != '[' || value.back() != ']') return false;
+	return split_top_level(value.substr(1, value.size() - 2), items);
+}
+
+static bool notes_vector_extension(Calculator &calculator, const std::string &expression,
+		const EvaluationOptions &options, const PrintOptions &print_options, std::string &display) {
+	const std::string text = trim_copy(expression);
+	const std::vector<std::string> reductions = {"sum", "mean", "median", "min", "max"};
+	for(const std::string &name : reductions) {
+		const std::string prefix = name + "(";
+		if(text.rfind(prefix, 0) != 0 || text.size() < prefix.size() + 1 || text.back() != ')') continue;
+		std::vector<std::string> items;
+		if(!vector_literal(text.substr(prefix.size(), text.size() - prefix.size() - 1), items)) continue;
+		if(items.empty()) { display = "undefined"; return true; }
+		std::string joined;
+		for(size_t i = 0; i < items.size(); ++i) {
+			if(i) joined += ",";
+			joined += items[i];
+		}
+		// Qalculate already implements the statistical functions correctly for
+		// literal vectors. Sum is the one vector reduction it intentionally does
+		// not provide, so lower it to an ordinary arithmetic expression.
+		if(name == "sum") {
+			joined.clear();
+			for(size_t i = 0; i < items.size(); ++i) {
+				if(i) joined += "+";
+				joined += "(" + items[i] + ")";
+			}
+		}
+		MathStructure result;
+		if(!calculator.calculate(&result, name == "sum" ? joined : text, 500, options) || result.isUndefined()) {
+			display = "undefined";
+			return true;
+		}
+		display = result.print(print_options, false, false, TAG_TYPE_TERMINAL);
+		return true;
+	}
+
+	// Note vectors use zero-based indexing. Handle literal vectors after local
+	// assignments have been substituted by the evaluator.
+	const size_t close = text.find(']');
+	if(close != std::string::npos && close + 1 < text.size() && text[close + 1] == '[' && text.back() == ']') {
+		std::vector<std::string> items;
+		if(vector_literal(text.substr(0, close + 1), items)) {
+			const std::string index_text = trim_copy(text.substr(close + 2, text.size() - close - 3));
+			const size_t colon = index_text.find(':');
+			if(colon != std::string::npos) {
+				char *start_end = NULL;
+				char *stop_end = NULL;
+				const long start = std::strtol(trim_copy(index_text.substr(0, colon)).c_str(), &start_end, 10);
+				const long stop = std::strtol(trim_copy(index_text.substr(colon + 1)).c_str(), &stop_end, 10);
+				if(start_end && *start_end == '\0' && stop_end && *stop_end == '\0') {
+					long normalized_start = start < 0 ? static_cast<long>(items.size()) + start : start;
+					long normalized_stop = stop < 0 ? static_cast<long>(items.size()) + stop : stop;
+					if(normalized_start >= 0 && normalized_stop >= normalized_start && static_cast<size_t>(normalized_stop) <= items.size()) {
+					display = "[";
+					for(long i = normalized_start; i < normalized_stop; ++i) {
+						if(i > normalized_start) display += " ";
+						display += items[static_cast<size_t>(i)];
+					}
+					display += "]";
+					return true;
+					}
+				}
+				if(start_end && *start_end == '\0' && stop_end && *stop_end == '\0') {
+					display = "undefined";
+					return true;
+				}
+			}
+			char *end = NULL;
+			const long index = std::strtol(index_text.c_str(), &end, 10);
+			if(end && *end == '\0') {
+				const long normalized_index = index < 0 ? static_cast<long>(items.size()) + index : index;
+				if(normalized_index >= 0 && static_cast<size_t>(normalized_index) < items.size()) {
+					display = items[static_cast<size_t>(normalized_index)];
+					return true;
+				}
+				display = "undefined";
+				return true;
+			}
+			if(end && *end == '\0') {
+				display = "undefined";
+				return true;
+			}
+		}
+	}
+
+	// Matrix times a vector is commonly written as [[...], [...]] * [...].
+	// Qalculate accepts the opposite orientation, but notes should support the
+	// conventional matrix-times-column-vector spelling as well.
+	const size_t multiplication = text.find(" * ");
+	if(multiplication != std::string::npos) {
+		std::vector<std::string> rows, vector_items;
+		const std::string matrix_text = trim_copy(text.substr(0, multiplication));
+		const std::string vector_text = trim_copy(text.substr(multiplication + 3));
+		if(vector_literal(vector_text, vector_items) && vector_literal(matrix_text, rows) && !rows.empty()) {
+			std::vector<std::string> row_values;
+			bool matrix = true;
+			for(size_t row_index = 0; row_index < rows.size(); ++row_index) {
+				const std::string &row = rows[row_index];
+				row_values.clear();
+				if(!vector_literal(row, row_values) || row_values.size() != vector_items.size()) { matrix = false; break; }
+				std::string sum;
+				for(size_t i = 0; i < row_values.size(); ++i) {
+					if(i) sum += "+";
+					sum += "(" + row_values[i] + ")*(" + vector_items[i] + ")";
+				}
+				MathStructure result;
+				if(!calculator.calculate(&result, sum, 500, options) || result.isUndefined()) { matrix = false; break; }
+				if(row_index == 0) display = "[";
+				else display += " ";
+				display += result.print(print_options, false, false, TAG_TYPE_TERMINAL);
+			}
+			if(matrix) { display += "]"; return true; }
+			display.clear();
+		}
+	}
+
+	// Element-wise exponentiation is the natural operation for note vectors.
+	const size_t power = text.rfind('^');
+	if(power != std::string::npos && power > 0 && power + 1 < text.size()) {
+		std::vector<std::string> items;
+		char *end = NULL;
+		const long exponent = std::strtol(text.substr(power + 1).c_str(), &end, 10);
+		if(end && *end == '\0' && vector_literal(text.substr(0, power), items)) {
+			display = "[";
+			for(size_t i = 0; i < items.size(); ++i) {
+				MathStructure result;
+				if(i) display += " ";
+				if(!calculator.calculate(&result, "(" + items[i] + ")^" + std::to_string(exponent), 500, options) || result.isUndefined()) {
+					display = "undefined";
+					return true;
+				}
+				display += result.print(print_options, false, false, TAG_TYPE_TERMINAL);
+			}
+			display += "]";
+			return true;
+		}
 	}
 	return false;
 }
@@ -221,12 +378,25 @@ std::vector<LineResult> evaluate_note(Calculator &calculator, const std::vector<
 					const bool left = position == 0 || (!std::isalnum(static_cast<unsigned char>(evaluated[position - 1])) && evaluated[position - 1] != '_');
 					size_t end = position + entry.first.size();
 					const bool right = end == evaluated.size() || (!std::isalnum(static_cast<unsigned char>(evaluated[end])) && evaluated[end] != '_');
-					if(left && right) { evaluated.replace(position, entry.first.size(), entry.second.scalar); position += entry.second.scalar.size(); } else position = end;
+					if(left && right) {
+						std::string replacement = entry.second.scalar;
+						if(entry.second.sequence) {
+							replacement = "[";
+							for(size_t item = 0; item < entry.second.items.size(); ++item) {
+								if(item > 0) replacement += ", ";
+								replacement += entry.second.items[item].scalar;
+							}
+							replacement += "]";
+						}
+						evaluated.replace(position, entry.first.size(), replacement);
+						position += replacement.size();
+					} else position = end;
 				}
 			}
 			MathStructure value_structure;
-			bool calculated = calculator.calculate(&value_structure, evaluated, 500, evaluation_options);
-			notes_debug("script", evaluated, calculated, value_structure.isUndefined(), evaluation_options.parse_options.unknowns_enabled);
+			std::string extension_display;
+			const bool extension_calculated = notes_vector_extension(calculator, evaluated, evaluation_options, print_options, extension_display);
+			bool calculated = extension_calculated || calculator.calculate(&value_structure, evaluated, 500, evaluation_options);
 			if((!calculated || value_structure.isUndefined()) && evaluated.rfind("diff(", 0) == 0 && evaluated.find(',') == std::string::npos) {
 				const size_t begin = evaluated.find('(') + 1;
 				const size_t end = evaluated.rfind(')');
@@ -261,8 +431,8 @@ std::vector<LineResult> evaluate_note(Calculator &calculator, const std::vector<
 					}
 				}
 			}
-			if(!calculated || value_structure.isUndefined()) { evaluation_error = "undefined"; return false; }
-			value.scalar = value_structure.print(print_options, false, false, TAG_TYPE_TERMINAL);
+			if(!calculated || (!extension_calculated && value_structure.isUndefined())) { evaluation_error = "undefined"; return false; }
+			value.scalar = extension_calculated ? extension_display : value_structure.print(print_options, false, false, TAG_TYPE_TERMINAL);
 			normalize_symbolic_display(value.scalar);
 			const std::string alias = "notes_diff_symbol";
 			for(const std::string &symbol : {std::string("q"), std::string("w")}) {
@@ -354,13 +524,14 @@ std::vector<LineResult> evaluate_note(Calculator &calculator, const std::vector<
 				}
 			}
 			MathStructure direct_value;
-			const bool direct_calculated = calculator.calculate(&direct_value, resolved_expression, 500, evaluation_options);
-			notes_debug("ordinary", resolved_expression, direct_calculated, direct_value.isUndefined(), evaluation_options.parse_options.unknowns_enabled);
-			result.display = direct_calculated && !direct_value.isUndefined()
-				? direct_value.print(print_options, false, false, TAG_TYPE_TERMINAL)
-				: "undefined";
+			std::string extension_display;
+			const bool extension_calculated = notes_vector_extension(calculator, resolved_expression, evaluation_options, print_options, extension_display);
+			const bool direct_calculated = extension_calculated || calculator.calculate(&direct_value, resolved_expression, 500, evaluation_options);
+			result.display = extension_calculated ? extension_display
+				: (direct_calculated && !direct_value.isUndefined()
+					? direct_value.print(print_options, false, false, TAG_TYPE_TERMINAL)
+					: "undefined");
 			normalize_symbolic_display(result.display);
-			if(notes_debug_enabled()) std::fprintf(stderr, "[notes-debug] formatted display=%s contains-string=%s\n", result.display.c_str(), contains_string_result(result.display) ? "yes" : "no");
 			// With unknowns enabled, Qalculate can occasionally fail to infer the
 			// differentiation variable for a one-argument diff() expression.  Infer
 			// the first symbolic identifier from the expression and retry explicitly.
@@ -416,8 +587,13 @@ std::vector<LineResult> evaluate_note(Calculator &calculator, const std::vector<
 			if(simple_assignment) {
 				MathStructure value;
 				calculator.clearMessages();
-				const bool calculated = !rhs.empty() && calculator.calculate(&value, rhs, 500, evaluation_options);
-					if(calculated && !value.isUndefined()) {
+				std::string extension_display;
+				const bool extension_calculated = !rhs.empty() && notes_vector_extension(calculator, rhs, evaluation_options, print_options, extension_display);
+				const bool calculated = extension_calculated || (!rhs.empty() && calculator.calculate(&value, rhs, 500, evaluation_options));
+					if(extension_calculated) {
+						result.display = extension_display;
+						if(!lhs.empty()) local_values[lhs] = rhs;
+					} else if(calculated && !value.isUndefined()) {
 						result.display = value.print(print_options, false, false, TAG_TYPE_TERMINAL);
 						if(!lhs.empty()) {
 							std::string local_rhs = rhs;
@@ -434,7 +610,6 @@ std::vector<LineResult> evaluate_note(Calculator &calculator, const std::vector<
 			if(contains_string_result(result.display)) {
 				result.display = "undefined";
 			}
-			if(notes_debug_enabled()) std::fprintf(stderr, "[notes-debug] ordinary-final display=%s line=%zu\n", result.display.c_str(), i + 1);
 			if(simple_assignment && !lhs.empty()) {
 				if(result.display == "undefined" || result.display == "error") {
 					local_values.erase(lhs);
@@ -445,7 +620,6 @@ std::vector<LineResult> evaluate_note(Calculator &calculator, const std::vector<
 			}
 		}
 		results.push_back(result);
-		if(notes_debug_enabled()) std::fprintf(stderr, "[notes-debug] returned display=%s line=%zu\n", results.back().display.c_str(), i + 1);
 	}
 	return results;
 }
