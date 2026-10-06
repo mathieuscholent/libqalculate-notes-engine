@@ -9,13 +9,13 @@ AM_CPPFLAGS = \
 	@LIBCURL_CFLAGS@ @LIBXML_CFLAGS@ @ICU_CFLAGS@
 
 bin_PROGRAMS = @QALCULATE_TEXT@
-noinst_PROGRAMS = @QALCULATE_DEFS2DOC@ @QALCULATE_TEST@ @QALCULATE_UNITTEST@
+noinst_PROGRAMS = @QALCULATE_DEFS2DOC@ @QALCULATE_TEST@ @QALCULATE_UNITTEST@ note-evaluator-test
 EXTRA_PROGRAMS = qalc defs2doc test unittest
 check_PROGRAMS = threadtest
 TESTS_ENVIRONMENT = QALCULATE_DEFINITIONS_DIR=$(abs_top_builddir)/data
 TESTS = unittest threadtest
 
-qalc_SOURCES = qalc.cc QalculateScript.cc QalculateScript.h
+qalc_SOURCES = qalc.cc QalculateScript.cc QalculateScript.h NoteEvaluator.cc NoteEvaluator.h
 
 qalc_LDADD = \
 	@LIBXML_LIBS@ \
@@ -25,6 +25,9 @@ qalc_LDADD = \
 	@LTLIBINTL@ \
 	@LTLIBICONV@ \
 	../libqalculate/libqalculate.la
+
+note_evaluator_test_SOURCES = NoteEvaluatorTest.cc NoteEvaluator.cc NoteEvaluator.h QalculateScript.cc QalculateScript.h
+note_evaluator_test_LDADD = $(qalc_LDADD)
 
 defs2doc_SOURCES = defs2doc.cc
 

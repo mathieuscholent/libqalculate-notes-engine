@@ -33,6 +33,10 @@ public:
 	typedef std::function<bool(const std::string &, const Environment &, Value &, std::string &, bool)> Evaluate;
 	bool execute(const std::vector<Statement> &program, const Evaluate &evaluate, std::string &error) const;
 	bool execute(const std::vector<Statement> &program, const Evaluate &evaluate, std::string &error, Environment &environment) const;
+	unsigned int currentLine() const { return current_line_; }
+
+private:
+	mutable unsigned int current_line_ = 0;
 };
 
 }

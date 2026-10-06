@@ -79,9 +79,10 @@ bool Executor::execute(const std::vector<Statement> &program, const Evaluate &ev
 bool Executor::execute(const std::vector<Statement> &program, const Evaluate &evaluate, std::string &error, Environment &environment) const {
 	const unsigned int max_iterations = 1000000;
 	std::function<bool(const std::vector<Statement> &, Environment &)> run;
-	run = [&](const std::vector<Statement> &statements, Environment &scope) {
+		run = [&](const std::vector<Statement> &statements, Environment &scope) {
 		for(size_t statement_index = 0; statement_index < statements.size(); statement_index++) {
 			const Statement &statement = statements[statement_index];
+			current_line_ = statement.line;
 			std::string text = statement.text;
 			if(text.size() > 1 && text.back() == ':') {
 				std::string header = trim(text.substr(0, text.length() - 1));
