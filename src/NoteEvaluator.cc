@@ -150,6 +150,7 @@ std::vector<LineResult> evaluate_note(Calculator &calculator, const std::vector<
 		std::vector<std::vector<std::string>> output(lines.size());
 		qalc_script::Executor::Environment environment;
 		qalc_script::Executor executor;
+		unsigned int failed_line = 0;
 		std::vector<std::vector<std::string>> *active_output = nullptr;
 		qalc_script::Executor::Evaluate evaluate = [&](const std::string &expression, const qalc_script::Executor::Environment &scope, qalc_script::Value &value, std::string &evaluation_error, bool display) {
 			std::string evaluated = expression;
@@ -176,8 +177,12 @@ std::vector<LineResult> evaluate_note(Calculator &calculator, const std::vector<
 		};
 		active_output = &output;
 		if(!executor.execute(program, evaluate, error, environment)) {
-			const unsigned int failed_line = executor.currentLine();
-			if(failed_line > 0 && failed_line <= results.size()) results[failed_line - 1].has_error = true;
+			failed_line = executor.currentLine();
+			if(failed_line > 0 && failed_line <= results.size()) {
+				results[failed_line - 1].has_error = true;
+				// Do not expose values calculated from the calculator's previous
+				// pass after a script condition fails. Those values are stale.
+			}
 		}
 		for(size_t i = 0; i < results.size(); ++i) {
 			if(function_lines[i]) results[i].display = defined_functions[i] ? "defined" : "undefined";
@@ -190,6 +195,20 @@ std::vector<LineResult> evaluate_note(Calculator &calculator, const std::vector<
 				if(output[i].size() > 1) results[i].display += "]";
 			}
 			else if(i < baseline.size()) results[i] = baseline[i];
+		}
+		if(failed_line > 0) {
+			for(size_t i = failed_line; i < results.size(); ++i) {
+				if(!function_lines[i]) {
+					std::string text = lines[i];
+					const size_t first = text.find_first_not_of(" \t");
+					if(first == std::string::npos) text.clear();
+					else text.erase(0, first);
+					const bool comment_or_empty = text.empty() || text.rfind("//", 0) == 0 || text[0] == '#';
+					const bool block_header = !text.empty() && text.back() == ':';
+					results[i].display = comment_or_empty || block_header ? "" : "undefined";
+					results[i].has_error = false;
+				}
+			}
 		}
 		for(size_t i = 0; i < results.size(); ++i) {
 			if(results[i].has_error) results[i].display = "error";
@@ -204,15 +223,17 @@ std::vector<LineResult> evaluate_note(Calculator &calculator, const std::vector<
 		if(function_lines[i]) {
 			result.display = defined_functions[i] ? "defined" : "undefined";
 		} else if(!is_comment_or_empty(line)) {
-			const size_t assignment = line.find('=');
-			const bool simple_assignment = assignment != std::string::npos && line.find('=', assignment + 1) == std::string::npos;
-			std::string lhs = simple_assignment ? line.substr(0, assignment) : "";
+			const size_t comment = line.find("//");
+			const std::string expression = comment == std::string::npos ? line : line.substr(0, comment);
+			const size_t assignment = expression.find('=');
+			const bool simple_assignment = assignment != std::string::npos && expression.find('=', assignment + 1) == std::string::npos;
+			std::string lhs = simple_assignment ? expression.substr(0, assignment) : "";
 			if(simple_assignment) {
 				const size_t first = lhs.find_first_not_of(" \t");
 				const size_t last = lhs.find_last_not_of(" \t");
 				lhs = first == std::string::npos ? "" : lhs.substr(first, last - first + 1);
 			}
-			const std::string rhs = simple_assignment ? line.substr(assignment + 1) : line;
+			const std::string rhs = simple_assignment ? expression.substr(assignment + 1) : expression;
 			const bool empty_assignment = simple_assignment && rhs.find_first_not_of(" \t") == std::string::npos;
 			bool depends_on_undefined = false;
 			for(const auto &name : undefined_variables) if(contains_identifier(rhs, name)) { depends_on_undefined = true; break; }
@@ -222,11 +243,11 @@ std::vector<LineResult> evaluate_note(Calculator &calculator, const std::vector<
 				results.push_back(result);
 				continue;
 			}
-			result.display = calculator.calculateAndPrint(line, 0, evaluation_options, print_options);
+			result.display = calculator.calculateAndPrint(expression, 0, evaluation_options, print_options);
 			if(simple_assignment) result.display.clear();
 			if(result.display.empty()) {
 				MathStructure value;
-				if(calculator.calculate(&value, line, 500, evaluation_options) && !value.isUndefined())
+				if(calculator.calculate(&value, expression, 500, evaluation_options) && !value.isUndefined())
 					result.display = value.print(print_options, false, false, TAG_TYPE_TERMINAL);
 			}
 			// libqalculate stores assignments successfully but does not always

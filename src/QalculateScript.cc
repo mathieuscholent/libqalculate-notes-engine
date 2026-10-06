@@ -23,6 +23,19 @@ static std::string trim(const std::string &value) {
 	return value.substr(first, last - first + 1);
 }
 
+static bool truth_value(const Value &value, bool &truth) {
+	const std::string scalar = trim(value.scalar);
+	if(scalar == "true" || scalar == "True") { truth = true; return true; }
+	if(scalar == "false" || scalar == "False") { truth = false; return true; }
+	char *end = NULL;
+	const long double number = std::strtold(scalar.c_str(), &end);
+	if(end == scalar.c_str()) return false;
+	while(end && *end && std::isspace(static_cast<unsigned char>(*end))) ++end;
+	if(end && *end != '\0') return false;
+	truth = number != 0;
+	return true;
+}
+
 static bool split_sequence(const std::string &text, std::vector<std::string> &parts) {
 	int depth = 0;
 	size_t start = 0;
@@ -45,7 +58,9 @@ bool Parser::parse(const std::vector<std::string> &lines, std::vector<Statement>
 	stack.push_back(std::make_pair(0, &program));
 	for(size_t i = 0; i < lines.size(); i++) {
 		std::string text = trim(lines[i]);
-		if(text.empty() || text[0] == '#') continue;
+		const size_t comment = text.find("//");
+		if(comment != std::string::npos) text = trim(text.substr(0, comment));
+		if(text.empty() || text[0] == '#' || (text.size() > 1 && text[0] == '/' && text[1] == '/')) continue;
 		unsigned int level = indentation(lines[i]);
 		while(stack.size() > 1 && level < stack.back().first) stack.pop_back();
 		if(level > stack.back().first && stack.back().second->empty()) {
@@ -93,14 +108,21 @@ bool Executor::execute(const std::vector<Statement> &program, const Evaluate &ev
 					if(header.find("if ") == 0 || header.find("else if ") == 0) {
 						std::string expression = header.find("if ") == 0 ? trim(header.substr(3)) : trim(header.substr(8));
 						Value result;
-						if(!evaluate(expression, scope, result, error, false)) return false;
-						char *end = NULL;
-						long double truth = std::strtold(result.scalar.c_str(), &end);
-						if(!end || *end != '\0') {
+						if(!evaluate(expression, scope, result, error, false)) {
+							error.clear();
+							while(statement_index + 1 < statements.size()) {
+								const std::string next = trim(statements[statement_index + 1].text);
+								if(next != "else:" && next.find("else if ") != 0) break;
+								++statement_index;
+							}
+							continue;
+						}
+						bool truth = false;
+						if(!truth_value(result, truth)) {
 							error = "if condition must evaluate to a number on line " + std::to_string(statement.line);
 							return false;
 						}
-						condition = truth != 0;
+						condition = truth;
 					}
 					if(condition) {
 						if(!run(statement.body, scope)) return false;
@@ -110,16 +132,20 @@ bool Executor::execute(const std::vector<Statement> &program, const Evaluate &ev
 							statement_index++;
 						}
 					} else if(statement_index + 1 < statements.size()) {
-						const Statement &alternative = statements[statement_index + 1];
-						std::string alternative_header = trim(alternative.text);
+						const std::string alternative_header = trim(statements[statement_index + 1].text);
 						if(alternative_header == "else:" || alternative_header.find("else if ") == 0) {
-							statement_index++;
-							if(alternative_header == "else:") {
-								if(!run(alternative.body, scope)) return false;
-							} else {
-								std::vector<Statement> branch(1, alternative);
-								if(!run(branch, scope)) return false;
+							// Pass the complete else-if chain to the executor. This lets a
+							// false else-if continue to a later else-if or final else.
+							std::vector<Statement> branch;
+							size_t next = statement_index + 1;
+							while(next < statements.size()) {
+								const std::string next_header = trim(statements[next].text);
+								if(next_header != "else:" && next_header.find("else if ") != 0) break;
+								branch.push_back(statements[next]);
+								statement_index = next;
+								++next;
 							}
+							if(!run(branch, scope)) return false;
 						}
 					}
 					continue;
@@ -136,14 +162,16 @@ bool Executor::execute(const std::vector<Statement> &program, const Evaluate &ev
 							return false;
 						}
 						Value result;
-						if(!evaluate(condition, scope, result, error, false)) return false;
-						char *end = NULL;
-						long double truth = std::strtold(result.scalar.c_str(), &end);
-						if(!end || *end != '\0') {
+						if(!evaluate(condition, scope, result, error, false)) {
+							error.clear();
+							break;
+						}
+						bool truth = false;
+						if(!truth_value(result, truth)) {
 							error = "while condition must evaluate to a number on line " + std::to_string(statement.line);
 							return false;
 						}
-						if(truth == 0) break;
+						if(!truth) break;
 						if(!run(statement.body, scope)) return false;
 					}
 					continue;
