@@ -77,7 +77,9 @@ bool Executor::execute(const std::vector<Statement> &program, const Evaluate &ev
 }
 
 bool Executor::execute(const std::vector<Statement> &program, const Evaluate &evaluate, std::string &error, Environment &environment) const {
-	const unsigned int max_iterations = 1000000;
+	// Notes are reevaluated after every keystroke; keep runaway loops from
+	// blocking the GUI thread while still allowing normal interactive scripts.
+	const unsigned int max_iterations = 10000;
 	std::function<bool(const std::vector<Statement> &, Environment &)> run;
 		run = [&](const std::vector<Statement> &statements, Environment &scope) {
 		for(size_t statement_index = 0; statement_index < statements.size(); statement_index++) {
@@ -202,6 +204,13 @@ bool Executor::execute(const std::vector<Statement> &program, const Evaluate &ev
 				std::string name = trim(text.substr(0, assignment));
 				std::string value = trim(text.substr(assignment + 1));
 				if(!name.empty() && name.find_first_not_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_") == std::string::npos) {
+					if(value.empty()) {
+						Value undefined;
+						undefined.undefined = true;
+						undefined.scalar = "undefined";
+						scope[name] = undefined;
+						continue;
+					}
 					bool tuple = value.size() >= 2 && value.front() == '(' && value.back() == ')';
 					bool list = value.size() >= 2 && value.front() == '[' && value.back() == ']';
 					if(list || tuple) {
@@ -223,7 +232,7 @@ bool Executor::execute(const std::vector<Statement> &program, const Evaluate &ev
 						continue;
 					}
 					Value result;
-					if(!evaluate(value, scope, result, error, false)) return false;
+					if(!evaluate(value, scope, result, error, true)) return false;
 					scope[name] = result;
 					continue;
 				}

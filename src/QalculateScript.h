@@ -17,9 +17,10 @@ struct Statement {
 struct Value {
 	bool sequence;
 	bool tuple;
+	bool undefined;
 	std::string scalar;
 	std::vector<Value> items;
-	Value() : sequence(false), tuple(false) {}
+	Value() : sequence(false), tuple(false), undefined(false) {}
 };
 
 class Parser {

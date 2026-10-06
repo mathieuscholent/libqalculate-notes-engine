@@ -154,6 +154,10 @@ std::vector<LineResult> evaluate_note(Calculator &calculator, const std::vector<
 		qalc_script::Executor::Evaluate evaluate = [&](const std::string &expression, const qalc_script::Executor::Environment &scope, qalc_script::Value &value, std::string &evaluation_error, bool display) {
 			std::string evaluated = expression;
 			for(const auto &entry : scope) {
+				if(entry.second.undefined && contains_identifier(evaluated, entry.first)) {
+					evaluation_error = "undefined";
+					return false;
+				}
 				size_t position = 0;
 				while((position = evaluated.find(entry.first, position)) != std::string::npos) {
 					const bool left = position == 0 || (!std::isalnum(static_cast<unsigned char>(evaluated[position - 1])) && evaluated[position - 1] != '_');
@@ -171,13 +175,13 @@ std::vector<LineResult> evaluate_note(Calculator &calculator, const std::vector<
 			return true;
 		};
 		active_output = &output;
-		for(const auto &statement : program) {
-			std::vector<qalc_script::Statement> one{statement};
-			if(!executor.execute(one, evaluate, error, environment) && statement.line > 0 && statement.line <= results.size()) results[statement.line - 1].has_error = true;
+		if(!executor.execute(program, evaluate, error, environment)) {
+			const unsigned int failed_line = executor.currentLine();
+			if(failed_line > 0 && failed_line <= results.size()) results[failed_line - 1].has_error = true;
 		}
 		for(size_t i = 0; i < results.size(); ++i) {
 			if(function_lines[i]) results[i].display = defined_functions[i] ? "defined" : "undefined";
-			else if(!lines[i].empty() && (lines[i][0] == ' ' || lines[i][0] == '\t') && !output[i].empty()) {
+			else if(!output[i].empty()) {
 				results[i].display = output[i].size() == 1 ? output[i][0] : "[";
 				for(size_t value = output[i].size() > 1 ? 0 : output[i].size(); value < output[i].size(); ++value) {
 					if(value > 0) results[i].display += " · ";
@@ -240,6 +244,13 @@ std::vector<LineResult> evaluate_note(Calculator &calculator, const std::vector<
 			}
 			if(contains_string_result(result.display)) {
 				result.display = "undefined";
+			}
+			if(simple_assignment && !lhs.empty()) {
+				if(result.display == "undefined" || result.display == "error") {
+					if(std::find(undefined_variables.begin(), undefined_variables.end(), lhs) == undefined_variables.end()) undefined_variables.push_back(lhs);
+				} else {
+					undefined_variables.erase(std::remove(undefined_variables.begin(), undefined_variables.end(), lhs), undefined_variables.end());
+				}
 			}
 		}
 		results.push_back(result);
