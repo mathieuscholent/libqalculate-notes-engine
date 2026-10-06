@@ -260,13 +260,19 @@ bool Executor::execute(const std::vector<Statement> &program, const Evaluate &ev
 						continue;
 					}
 					Value result;
-					if(!evaluate(value, scope, result, error, true)) return false;
+					if(!evaluate(value, scope, result, error, true)) {
+						Value undefined;
+						undefined.undefined = true;
+						undefined.scalar = "undefined";
+						scope[name] = undefined;
+						continue;
+					}
 					scope[name] = result;
 					continue;
 				}
 			}
 			Value result;
-			if(!evaluate(text, scope, result, error, true)) return false;
+			if(!evaluate(text, scope, result, error, true)) continue;
 		}
 		return true;
 	};
