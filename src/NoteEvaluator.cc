@@ -528,9 +528,10 @@ std::vector<LineResult> evaluate_note(Calculator &calculator, const std::vector<
 				continue;
 			}
 			std::string resolved_expression = expression;
+			const size_t substitution_start = simple_assignment ? resolved_expression.find('=') + 1 : 0;
 			const bool differentiated_expression = resolved_expression.rfind("diff(", 0) == 0;
 			for(const auto &entry : local_values) {
-				size_t position = 0;
+				size_t position = substitution_start;
 				while((position = resolved_expression.find(entry.first, position)) != std::string::npos) {
 					const size_t comma = differentiated_expression ? resolved_expression.find(',') : std::string::npos;
 					if(comma != std::string::npos && position >= comma) break;
