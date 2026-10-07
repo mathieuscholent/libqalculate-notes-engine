@@ -38,7 +38,34 @@ int main() {
 	assert(indexing[4].display == "10");
 	assert(indexing[5].display == "undefined");
 	assert(indexing[6].display == "[20 30]");
-	assert(indexing[7].display == "undefined");
+	assert(indexing[7].display == "[20 30]");
 	assert(indexing[8].display == "undefined");
+	assert(indexing[9].display == "undefined");
+	const auto compact_indexing = qalc_notes::evaluate_note(calculator, {
+		"values=[1, 2, 3]", "values", "values[0]"
+	});
+	assert(compact_indexing[2].display == "1");
+	qalc_notes::NoteEvaluationSession session;
+	Calculator session_calculator;
+	session_calculator.loadGlobalDefinitions();
+	const std::vector<std::string> dependent_lines = {"x = 1", "y = x + 1", "z = 100", "w = y + 1", "7"};
+	const auto first_session = session.evaluate(session_calculator, dependent_lines);
+	assert(first_session[1].display == "2");
+	assert(first_session[2].display == "100");
+	assert(first_session[3].display == "3");
+	const auto second_session = session.evaluate(session_calculator, {"x = 2", "y = x + 1", "z = 100", "w = y + 1", "7"}, 0);
+	assert(second_session[0].display == "2");
+	assert(second_session[1].display == "3");
+	assert(second_session[2].display == "100");
+	assert(second_session[3].display == "4");
+	assert(second_session[4].display == "7");
+	const std::vector<std::string> independent_lines = {"x = 5", "2 + 2", "y = x + 1"};
+	const auto independent_first = session.evaluate(session_calculator, independent_lines);
+	assert(independent_first[1].display == "4");
+	assert(independent_first[2].display == "6");
+	const auto independent_second = session.evaluate(session_calculator, {"x = 5", "3 + 3", "y = x + 1"}, 1);
+	assert(independent_second[0].display == "5");
+	assert(independent_second[1].display == "6");
+	assert(independent_second[2].display == "6");
 	return 0;
 }

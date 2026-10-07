@@ -88,10 +88,14 @@ bool Parser::parse(const std::vector<std::string> &lines, std::vector<Statement>
 
 bool Executor::execute(const std::vector<Statement> &program, const Evaluate &evaluate, std::string &error) const {
 	Environment environment;
-	return execute(program, evaluate, error, environment);
+	return execute(program, evaluate, error, environment, Checkpoint());
 }
 
 bool Executor::execute(const std::vector<Statement> &program, const Evaluate &evaluate, std::string &error, Environment &environment) const {
+	return execute(program, evaluate, error, environment, Checkpoint());
+}
+
+bool Executor::execute(const std::vector<Statement> &program, const Evaluate &evaluate, std::string &error, Environment &environment, const Checkpoint &checkpoint) const {
 	// Notes are reevaluated after every keystroke; keep runaway loops from
 	// blocking the GUI thread while still allowing normal interactive scripts.
 	const unsigned int max_iterations = 10000;
@@ -100,6 +104,7 @@ bool Executor::execute(const std::vector<Statement> &program, const Evaluate &ev
 		for(size_t statement_index = 0; statement_index < statements.size(); statement_index++) {
 			const Statement &statement = statements[statement_index];
 			current_line_ = statement.line;
+			if(checkpoint) checkpoint(current_line_, scope);
 			std::string text = statement.text;
 			if(text.size() > 1 && text.back() == ':') {
 				std::string header = trim(text.substr(0, text.length() - 1));

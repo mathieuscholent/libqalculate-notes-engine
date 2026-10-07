@@ -32,8 +32,10 @@ class Executor {
 public:
 	typedef std::map<std::string, Value> Environment;
 	typedef std::function<bool(const std::string &, const Environment &, Value &, std::string &, bool)> Evaluate;
+	typedef std::function<void(unsigned int, const Environment &)> Checkpoint;
 	bool execute(const std::vector<Statement> &program, const Evaluate &evaluate, std::string &error) const;
 	bool execute(const std::vector<Statement> &program, const Evaluate &evaluate, std::string &error, Environment &environment) const;
+	bool execute(const std::vector<Statement> &program, const Evaluate &evaluate, std::string &error, Environment &environment, const Checkpoint &checkpoint) const;
 	unsigned int currentLine() const { return current_line_; }
 
 private:

@@ -39,12 +39,34 @@
 
 #include <libqalculate/MathStructure-support.h>
 #include "QalculateScript.h"
+#include "NoteEvaluator.h"
 
 using namespace std;
 extern EvaluationOptions evalops;
 extern PrintOptions printops;
 
 static qalc_script::Executor::Environment interactive_script_environment;
+static qalc_notes::NoteEvaluationSession interactive_note_session;
+static std::vector<std::string> interactive_note_lines;
+
+static bool is_note_extension_input(const std::string &text) {
+	return text.find('[') != string::npos || text.find(':') != string::npos ||
+		(text.find('=') != string::npos && text.find('(') == string::npos);
+}
+
+static bool has_unbalanced_delimiters(const std::string &text) {
+	std::vector<char> stack;
+	for(char c : text) {
+		if(c == '(' || c == '[' || c == '{') stack.push_back(c);
+		else if(c == ')' || c == ']' || c == '}') {
+			if(stack.empty()) return true;
+			const char open = stack.back();
+			if((c == ')' && open != '(') || (c == ']' && open != '[') || (c == '}' && open != '{')) return true;
+			stack.pop_back();
+		}
+	}
+	return !stack.empty();
+}
 
 static bool run_script_file(const string &path, qalc_script::Executor::Environment *persistent_environment = NULL) {
 	std::ifstream input(path.c_str());
@@ -55,6 +77,24 @@ static bool run_script_file(const string &path, qalc_script::Executor::Environme
 	vector<string> lines;
 	string line;
 	while(std::getline(input, line)) lines.push_back(line);
+	// Use the notes evaluator for standalone scripts so CLI execution has the
+	// same local values, vector operations, indexing, conditions, loops, and
+	// undefined-value propagation as the shared engine. The persistent
+	// interactive-script mode below retains its environment between files.
+	if(!persistent_environment) {
+		const vector<qalc_notes::LineResult> results = qalc_notes::evaluate_note(*CALCULATOR, lines);
+		bool success = true;
+		for(size_t i = 0; i < results.size(); ++i) {
+			if(results[i].has_error) {
+				fprintf(stderr, "Script error on line %zu\n", i + 1);
+				success = false;
+			} else if(!results[i].display.empty()) {
+				fputs(results[i].display.c_str(), stdout);
+				fputc('\n', stdout);
+			}
+		}
+		return success;
+	}
 	qalc_script::Parser parser;
 	vector<qalc_script::Statement> program;
 	string error;
@@ -775,6 +815,7 @@ bool name_has_formatting(const ExpressionName *ename) {
 #ifdef HAVE_LIBREADLINE
 
 vector<string> matches;
+static bool reading_note_block = false;
 
 #define COMPLETION_MATCH_NAME \
 		if(ename->unicode && !allow_unicode) continue; \
@@ -951,6 +992,11 @@ void generate_completion_matches(const char *text) {
 	}
 }
 char *qalc_completion(const char *text, int index) {
+	// Readline completion only understands ordinary Qalculate names. Note
+	// language control lines and indexing expressions are incomplete while the
+	// user is typing; sending them through the legacy completion walker can
+	// dereference parser state that does not exist yet.
+	if(reading_note_block || (rl_line_buffer && (strstr(rl_line_buffer, ":") || strstr(rl_line_buffer, "[") || strstr(rl_line_buffer, "{") || strstr(rl_line_buffer, "}")))) return NULL;
 	if(index == 0) {
 		if(strlen(text) < 1) return NULL;
 		generate_completion_matches(text);
@@ -5256,11 +5302,17 @@ int main(int argc, char *argv[]) {
 		if(explicit_command) str.erase(0, 1);
 		if(!unittest || str.empty() || str[0] != '\t') remove_blank_ends(str);
 		if(rpn_mode && explicit_command && str.empty()) {str = "/"; explicit_command = false;}
+		if(!interactive_mode && is_note_extension_input(str)) {
+				interactive_note_lines.push_back(str);
+				const vector<qalc_notes::LineResult> note_results = interactive_note_session.evaluate(*CALCULATOR, interactive_note_lines);
+				if(!note_results.empty() && !note_results.back().display.empty()) puts(note_results.back().display.c_str());
+				continue;
+		}
 		if(interactive_mode && !str.empty()) {
 			size_t assignment = str.find('=');
 			size_t value_start = assignment == string::npos ? string::npos : str.find_first_not_of(SPACES, assignment + 1);
 			bool script_assignment = value_start != string::npos && (str[value_start] == '[' || str[value_start] == '(');
-			if(script_assignment) {
+			if(script_assignment && !is_note_extension_input(str)) {
 				string interactive_script = "/tmp/qalc-interactive-script.qalcscript";
 				ofstream script_output(interactive_script.c_str());
 				script_output << str << '\n';
@@ -5272,6 +5324,7 @@ int main(int argc, char *argv[]) {
 		if(interactive_mode && !str.empty() && str.back() == ':') {
 			vector<string> script_lines;
 			script_lines.push_back(str);
+			reading_note_block = true;
 			while(true) {
 				char *block_line = readline("... ");
 				if(!block_line || block_line[0] == '\0') {
@@ -5281,11 +5334,13 @@ int main(int argc, char *argv[]) {
 				script_lines.push_back(block_line);
 				free(block_line);
 			}
-			string interactive_script = "/tmp/qalc-interactive-script.qalcscript";
-			ofstream script_output(interactive_script.c_str());
-			for(const string &script_line : script_lines) script_output << script_line << '\n';
-			script_output.close();
-			run_script_file(interactive_script, &interactive_script_environment);
+			reading_note_block = false;
+			// Note-language blocks share state with preceding note lines. Do not
+			// send them through the legacy persistent script environment, which
+			// evaluates the block independently and loses note-local assignments.
+			for(const string &script_line : script_lines) interactive_note_lines.push_back(script_line);
+			const vector<qalc_notes::LineResult> note_results = interactive_note_session.evaluate(*CALCULATOR, interactive_note_lines);
+			if(!note_results.empty() && !note_results.back().display.empty()) puts(note_results.back().display.c_str());
 			continue;
 		}
 		slen = str.length();
@@ -9117,6 +9172,38 @@ void execute_expression(bool do_mathoperation, MathOperation op, MathFunction *f
 	if(do_stack) {
 	} else {
 		str = expression_str;
+		if(str.find('{') != string::npos || str.find('}') != string::npos) {
+			fprintf(stderr, "Error: curly-brace expressions are not supported\n");
+			return;
+		}
+		if(has_unbalanced_delimiters(str)) {
+			fprintf(stderr, "Error: unbalanced delimiters in expression\n");
+			return;
+		}
+		// Interactive qalc normally evaluates one expression at a time. Route
+		// note-language input through the shared evaluator so local sequences,
+		// indexing, conditions, loops, and undefined propagation work in the REPL
+		// exactly as they do in note scripts.
+		if(is_note_extension_input(str)) {
+			interactive_note_lines.push_back(str);
+			const vector<qalc_notes::LineResult> note_results = interactive_note_session.evaluate(*CALCULATOR, interactive_note_lines);
+			if(!note_results.empty()) {
+				const qalc_notes::LineResult &note_result = note_results.back();
+				if(!note_result.display.empty()) {
+					puts(note_result.display.c_str());
+					fflush(stdout);
+				}
+			}
+			return;
+		}
+		if(!interactive_note_lines.empty() &&
+			interactive_note_lines.back().find('=') != string::npos &&
+			(str.find('[') != string::npos || str.find_first_not_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_ ") == string::npos)) {
+			interactive_note_lines.push_back(str);
+			const vector<qalc_notes::LineResult> note_results = interactive_note_session.evaluate(*CALCULATOR, interactive_note_lines);
+			if(!note_results.empty() && !note_results.back().display.empty()) puts(note_results.back().display.c_str());
+			return;
+		}
 		string to_str = CALCULATOR->parseComments(str, evalops.parse_options);
 		if(!to_str.empty() && str.empty()) {
 			if(auto_calculate) autocalc_result = "";

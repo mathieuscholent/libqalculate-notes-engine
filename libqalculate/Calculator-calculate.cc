@@ -25,12 +25,27 @@
 #include "QalculateDateTime.h"
 
 #include <locale.h>
+#include <vector>
 #ifdef _MSC_VER
 #	include <sys/utime.h>
 #else
 #	include <unistd.h>
 #	include <utime.h>
 #endif
+
+static bool invalid_expression_delimiters(const std::string &expression) {
+	std::vector<char> stack;
+	for(char c : expression) {
+		if(c == '(' || c == '[' || c == '{') stack.push_back(c);
+		else if(c == ')' || c == ']' || c == '}') {
+			if(stack.empty()) return true;
+			const char open = stack.back();
+			if((c == ')' && open != '(') || (c == ']' && open != '[') || (c == '}' && open != '{')) return true;
+			stack.pop_back();
+		}
+	}
+	return !stack.empty();
+}
 #include <time.h>
 #include <sys/types.h>
 
@@ -2475,6 +2490,11 @@ string Calculator::calculateAndPrint(string str, int msecs, const EvaluationOpti
 	return result;
 }
 bool Calculator::calculate(MathStructure *mstruct, string str, int msecs, const EvaluationOptions &eo, MathStructure *parsed_struct, MathStructure *to_struct, bool make_to_division) {
+	if(invalid_expression_delimiters(str) || str.find('{') != string::npos || str.find('}') != string::npos) {
+		mstruct->clear();
+		mstruct->setUndefined();
+		return false;
+	}
 
 	mstruct->set(string(_("calculating...")), false, true);
 	b_busy = true;
@@ -4214,4 +4234,3 @@ void Calculator::stopControl() {
 	i_aborted = 0;
 	i_timeout = 0;
 }
-

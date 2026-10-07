@@ -6,9 +6,31 @@
 #include <cstdlib>
 #include <algorithm>
 #include <map>
+#include <set>
 #include <sstream>
+#include <fcntl.h>
+#include <unistd.h>
 
 namespace qalc_notes {
+
+std::string save_calculator_checkpoint(Calculator &calculator) {
+	return calculator.saveTemporaryDefinitions();
+}
+
+bool restore_calculator_checkpoint(Calculator &calculator, const std::string &checkpoint) {
+	if(checkpoint.empty()) return false;
+	char path[] = "/tmp/qalc-notes-checkpoint-XXXXXX";
+	const int fd = mkstemp(path);
+	if(fd < 0) return false;
+	const ssize_t written = write(fd, checkpoint.data(), checkpoint.size());
+	close(fd);
+	calculator.resetVariables();
+	calculator.resetFunctions();
+	calculator.loadGlobalDefinitions();
+	const bool restored = written == static_cast<ssize_t>(checkpoint.size()) && calculator.loadDefinitions(path, true, false) >= 0;
+	unlink(path);
+	return restored;
+}
 
 
 static unsigned int first_body_line(const qalc_script::Statement &statement) {
@@ -588,15 +610,16 @@ std::vector<LineResult> evaluate_note(Calculator &calculator, const std::vector<
 				MathStructure value;
 				calculator.clearMessages();
 				std::string extension_display;
-				const bool extension_calculated = !rhs.empty() && notes_vector_extension(calculator, rhs, evaluation_options, print_options, extension_display);
-				const bool calculated = extension_calculated || (!rhs.empty() && calculator.calculate(&value, rhs, 500, evaluation_options));
+				const std::string resolved_rhs = resolved_expression.substr(assignment + 1);
+				const bool extension_calculated = !resolved_rhs.empty() && notes_vector_extension(calculator, resolved_rhs, evaluation_options, print_options, extension_display);
+				const bool calculated = extension_calculated || (!resolved_rhs.empty() && calculator.calculate(&value, resolved_rhs, 500, evaluation_options));
 					if(extension_calculated) {
 						result.display = extension_display;
-						if(!lhs.empty()) local_values[lhs] = rhs;
+						if(!lhs.empty()) local_values[lhs] = resolved_rhs;
 					} else if(calculated && !value.isUndefined()) {
 						result.display = value.print(print_options, false, false, TAG_TYPE_TERMINAL);
 						if(!lhs.empty()) {
-							std::string local_rhs = rhs;
+							std::string local_rhs = resolved_rhs;
 							const size_t first_rhs = local_rhs.find_first_not_of(" \t");
 							const size_t last_rhs = local_rhs.find_last_not_of(" \t");
 							local_values[lhs] = first_rhs == std::string::npos ? "" : local_rhs.substr(first_rhs, last_rhs - first_rhs + 1);
@@ -622,6 +645,139 @@ std::vector<LineResult> evaluate_note(Calculator &calculator, const std::vector<
 		results.push_back(result);
 	}
 	return results;
+}
+
+std::vector<LineResult> NoteEvaluationSession::evaluate(Calculator &calculator, const std::vector<std::string> &lines, int changed_line) {
+	if(lines == lines_ && results_.size() == lines.size()) return results_;
+	const bool ordinary_independent = std::all_of(lines.begin(), lines.end(), [](const std::string &line) {
+		const size_t first = line.find_first_not_of(" \t");
+		if(first == std::string::npos) return true;
+		const std::string trimmed = line.substr(first);
+		return first == 0 && trimmed.rfind("//", 0) != 0 && trimmed.rfind("#", 0) != 0 &&
+			trimmed.back() != ':';
+	});
+	bool safe_expression_edit = changed_line >= 0 &&
+		changed_line < static_cast<int>(lines.size()) && lines[changed_line].find('=') == std::string::npos &&
+		(lines[changed_line].empty() || (lines[changed_line][0] != ' ' && lines[changed_line][0] != '\t')) &&
+		lines[changed_line].find(':') == std::string::npos;
+	if(safe_expression_edit) {
+		std::vector<std::string> assigned;
+		for(int i = 0; i < changed_line; ++i) {
+			const size_t equals = lines[i].find('=');
+			if(equals == std::string::npos) continue;
+			const std::string name = trim_copy(lines[i].substr(0, equals));
+			if(!name.empty()) assigned.push_back(name);
+		}
+		for(const std::string &name : assigned) {
+			if(contains_identifier(lines[changed_line], name)) { safe_expression_edit = false; break; }
+		}
+		if(safe_expression_edit) {
+			for(int i = changed_line + 1; i < static_cast<int>(lines.size()); ++i) {
+				if(contains_identifier(lines[i], trim_copy(lines[changed_line]))) { safe_expression_edit = false; break; }
+			}
+		}
+	}
+	if(ordinary_independent && changed_line >= 0 && changed_line < static_cast<int>(lines.size()) && !safe_expression_edit) {
+		const size_t equals = lines[changed_line].find('=');
+		if(equals != std::string::npos && lines[changed_line].find('=', equals + 1) == std::string::npos) {
+			const std::string name = trim_copy(lines[changed_line].substr(0, equals));
+			const std::string rhs = lines[changed_line].substr(equals + 1);
+			bool prefix_dependency = false;
+			for(int i = 0; i < changed_line; ++i) {
+				const size_t previous_equals = lines[i].find('=');
+				if(previous_equals != std::string::npos && contains_identifier(rhs, trim_copy(lines[i].substr(0, previous_equals)))) {
+					prefix_dependency = true;
+					break;
+				}
+			}
+			bool downstream_dependency = false;
+			for(int i = changed_line + 1; i < static_cast<int>(lines.size()) && !downstream_dependency; ++i)
+				downstream_dependency = contains_identifier(lines[i], name);
+			safe_expression_edit = !name.empty() && !prefix_dependency && !downstream_dependency;
+		}
+	}
+	const bool reusable = safe_expression_edit &&
+		changed_line >= 0 &&
+		changed_line < static_cast<int>(lines.size()) && lines_.size() == lines.size() && results_.size() == lines.size();
+	if(reusable) {
+		std::vector<LineResult> updated = results_;
+		const std::vector<std::string> one_line = {lines[changed_line]};
+		const std::vector<LineResult> changed = evaluate_note(calculator, one_line);
+		updated[changed_line] = changed.front();
+		lines_ = lines;
+		results_ = updated;
+		return results_;
+	}
+	if(changed_line >= 0 && changed_line < static_cast<int>(lines.size()) &&
+		lines_.size() == lines.size() && results_.size() == lines.size()) {
+		const size_t first = lines[changed_line].find_first_not_of(" \t");
+		const std::string trimmed = first == std::string::npos ? "" : lines[changed_line].substr(first);
+		if(trimmed.empty() || trimmed.rfind("//", 0) == 0 || trimmed.rfind("#", 0) == 0) {
+			std::vector<LineResult> updated = results_;
+			updated[changed_line] = LineResult();
+			lines_ = lines;
+			results_ = updated;
+			return results_;
+		}
+	}
+	if(ordinary_independent && changed_line >= 0 && changed_line < static_cast<int>(lines.size()) &&
+		lines_.size() == lines.size() && results_.size() == lines.size()) {
+		const size_t equals = lines[changed_line].find('=');
+		if(equals != std::string::npos && lines[changed_line].find('=', equals + 1) == std::string::npos) {
+			std::vector<LineResult> updated = results_;
+			const std::vector<LineResult> changed = evaluate_note(calculator, {lines[changed_line]});
+			updated[changed_line] = changed.front();
+			const std::string changed_name = trim_copy(lines[changed_line].substr(0, equals));
+			if(updated[changed_line].display != "undefined" && updated[changed_line].display != "error") assignment_values_[changed_name] = updated[changed_line].display;
+			else assignment_values_.erase(changed_name);
+			// Only propagate through assignments which depend on the edited one.
+			// In particular, do not force the first unrelated line after the edit
+			// through the evaluator on every keystroke.
+			std::set<std::string> changed_names = {changed_name};
+			for(int i = changed_line + 1; i < static_cast<int>(lines.size()); ++i) {
+				std::string expression = lines[i];
+				bool depends = false;
+				for(const auto &entry : assignment_values_) {
+					if(changed_names.find(entry.first) == changed_names.end()) continue;
+					if(contains_identifier(expression, entry.first)) {
+						depends = true;
+						size_t position = 0;
+						while((position = expression.find(entry.first, position)) != std::string::npos) {
+							const bool left = position == 0 || (!std::isalnum(static_cast<unsigned char>(expression[position - 1])) && expression[position - 1] != '_');
+							const size_t end = position + entry.first.size();
+							const bool right = end == expression.size() || (!std::isalnum(static_cast<unsigned char>(expression[end])) && expression[end] != '_');
+							if(left && right) { expression.replace(position, entry.first.size(), "(" + entry.second + ")"); position += entry.second.size() + 2; }
+							else position = end;
+						}
+					}
+				}
+				if(!depends) continue;
+				const std::vector<LineResult> recalculated = evaluate_note(calculator, {expression});
+				updated[i] = recalculated.front();
+				const size_t next_equals = lines[i].find('=');
+				if(next_equals != std::string::npos) {
+					const std::string next_name = trim_copy(lines[i].substr(0, next_equals));
+					if(updated[i].display == "undefined" || updated[i].display == "error") assignment_values_.erase(next_name);
+					else {
+						assignment_values_[next_name] = updated[i].display;
+						changed_names.insert(next_name);
+					}
+				}
+			}
+			lines_ = lines;
+			results_ = updated;
+			return results_;
+		}
+	}
+	results_ = evaluate_note(calculator, lines);
+	lines_ = lines;
+	assignment_values_.clear();
+	for(size_t i = 0; i < lines.size() && i < results_.size(); ++i) {
+		const size_t equals = lines[i].find('=');
+		if(equals != std::string::npos && results_[i].display != "undefined" && results_[i].display != "error")
+			assignment_values_[trim_copy(lines[i].substr(0, equals))] = results_[i].display;
+	}
+	return results_;
 }
 
 }
