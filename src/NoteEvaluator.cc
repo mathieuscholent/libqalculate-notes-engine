@@ -875,7 +875,7 @@ std::vector<LineResult> NoteEvaluationSession::evaluate(Calculator &calculator, 
 			return results_;
 		}
 	}
-	if(changed_line >= 0 && changed_line < static_cast<int>(lines.size()) &&
+	if(ordinary_independent && changed_line >= 0 && changed_line < static_cast<int>(lines.size()) &&
 		lines_.size() == lines.size() && results_.size() == lines.size()) {
 		const size_t equals = lines[changed_line].find('=');
 		if(equals != std::string::npos && lines[changed_line].find('=', equals + 1) == std::string::npos) {
