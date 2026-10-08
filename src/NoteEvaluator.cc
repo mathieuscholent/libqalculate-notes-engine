@@ -3,11 +3,14 @@
 #include "../libqalculate/Function.h"
 
 #include <cctype>
+#include <cmath>
 #include <cstdlib>
 #include <algorithm>
 #include <map>
 #include <set>
 #include <sstream>
+#include <iomanip>
+#include <stdexcept>
 #include <fcntl.h>
 #include <unistd.h>
 
@@ -87,6 +90,86 @@ static std::string trim_copy(const std::string &value) {
 	if(first == std::string::npos) return "";
 	const size_t last = value.find_last_not_of(" \t");
 	return value.substr(first, last - first + 1);
+}
+
+class FastNumericParser {
+public:
+	 explicit FastNumericParser(const std::string &text) : text_(text) {}
+	 double parse() {
+		 value_ = parse_expression();
+		 skip_space();
+		 if(position_ != text_.size()) throw std::invalid_argument("not numeric");
+		 return value_;
+	 }
+private:
+	 const std::string &text_;
+	 size_t position_ = 0;
+	 double value_ = 0;
+	 void skip_space() { while(position_ < text_.size() && std::isspace(static_cast<unsigned char>(text_[position_]))) ++position_; }
+	 double parse_expression() {
+		 double result = parse_term();
+		 while(true) {
+			 skip_space();
+			 if(position_ >= text_.size() || (text_[position_] != '+' && text_[position_] != '-')) return result;
+			 const char op = text_[position_++];
+			 const double right = parse_term();
+			 result = op == '+' ? result + right : result - right;
+		 }
+	 }
+	 double parse_term() {
+		 double result = parse_power();
+		 while(true) {
+			 skip_space();
+			 if(position_ >= text_.size() || (text_[position_] != '*' && text_[position_] != '/')) return result;
+			 const char op = text_[position_++];
+			 const double right = parse_power();
+			 if(op == '/' && right == 0) throw std::invalid_argument("division by zero");
+			 result = op == '*' ? result * right : result / right;
+		 }
+	 }
+	 double parse_power() {
+		 double result = parse_unary();
+		 skip_space();
+		 if(position_ < text_.size() && text_[position_] == '^') {
+			 ++position_;
+			 result = std::pow(result, parse_power());
+		 }
+		 return result;
+	 }
+	 double parse_unary() {
+		 skip_space();
+		 if(position_ < text_.size() && (text_[position_] == '+' || text_[position_] == '-')) {
+			 const bool negative = text_[position_++] == '-';
+			 const double result = parse_unary();
+			 return negative ? -result : result;
+		 }
+		 if(position_ < text_.size() && text_[position_] == '(') {
+			 ++position_;
+			 const double result = parse_expression();
+			skip_space();
+			if(position_ >= text_.size() || text_[position_++] != ')') throw std::invalid_argument("unclosed expression");
+			return result;
+		 }
+		 const char *start = text_.c_str() + position_;
+		 char *end = nullptr;
+		 const double result = std::strtod(start, &end);
+		 if(end == start) throw std::invalid_argument("not numeric");
+		 position_ += static_cast<size_t>(end - start);
+		 return result;
+	 }
+};
+
+static bool fast_numeric_result(const std::string &expression, std::string &display) {
+	 try {
+		 const double value = FastNumericParser(expression).parse();
+		 if(!std::isfinite(value)) return false;
+		 std::ostringstream output;
+		 output << std::setprecision(15) << value;
+		 display = output.str();
+		 return true;
+	 } catch(const std::exception &) {
+		 return false;
+	 }
 }
 
 static bool split_top_level(const std::string &text, std::vector<std::string> &parts) {
@@ -749,8 +832,10 @@ std::vector<LineResult> NoteEvaluationSession::evaluate(Calculator &calculator, 
 		const size_t equals = lines[changed_line].find('=');
 		if(equals != std::string::npos && lines[changed_line].find('=', equals + 1) == std::string::npos) {
 			std::vector<LineResult> updated = results_;
-			const std::vector<LineResult> changed = evaluate_note(calculator, {lines[changed_line]});
-			updated[changed_line] = changed.front();
+			std::string changed_display;
+			const std::string changed_rhs = lines[changed_line].substr(equals + 1);
+			if(fast_numeric_result(changed_rhs, changed_display)) updated[changed_line] = LineResult{changed_display, false};
+			else updated[changed_line] = evaluate_note(calculator, {lines[changed_line]}).front();
 			const std::string changed_name = trim_copy(lines[changed_line].substr(0, equals));
 			// Function definitions are assignments syntactically, but changing one
 			// changes the evaluator's callable environment rather than one scalar
@@ -770,8 +855,12 @@ std::vector<LineResult> NoteEvaluationSession::evaluate(Calculator &calculator, 
 			else assignment_values_.erase(changed_name);
 			// Only propagate through assignments which depend on the edited one.
 			// In particular, do not force the first unrelated line after the edit
-			// through the evaluator on every keystroke.
+			// through the evaluator on every keystroke. Collect the affected block
+			// and evaluate it in one pass; repeated single-line Qalculate calls are
+			// significantly more expensive than one local note evaluation.
 			std::set<std::string> changed_names = {changed_name};
+			std::vector<int> dependent_indices;
+			std::vector<std::string> dependent_expressions;
 			for(int i = changed_line + 1; i < static_cast<int>(lines.size()); ++i) {
 				std::string expression = lines[i];
 				bool depends = false;
@@ -790,16 +879,43 @@ std::vector<LineResult> NoteEvaluationSession::evaluate(Calculator &calculator, 
 					}
 				}
 				if(!depends) continue;
-				const std::vector<LineResult> recalculated = evaluate_note(calculator, {expression});
-				updated[i] = recalculated.front();
+				dependent_indices.push_back(i);
+				dependent_expressions.push_back(expression);
 				const size_t next_equals = lines[i].find('=');
 				if(next_equals != std::string::npos) {
 					const std::string next_name = trim_copy(lines[i].substr(0, next_equals));
-					if(updated[i].display == "undefined" || updated[i].display == "error") assignment_values_.erase(next_name);
-					else {
-						assignment_values_[next_name] = updated[i].display;
-						changed_names.insert(next_name);
+					changed_names.insert(next_name);
+				}
+			}
+		if(!dependent_expressions.empty()) {
+				std::vector<LineResult> recalculated;
+				bool used_fast_path = true;
+				for(const std::string &expression : dependent_expressions) {
+					const size_t expression_equals = expression.find('=');
+					std::string rhs = expression_equals == std::string::npos ? expression : expression.substr(expression_equals + 1);
+					for(const auto &entry : assignment_values_) {
+						size_t position = 0;
+						while((position = rhs.find(entry.first, position)) != std::string::npos) {
+							const bool left = position == 0 || (!std::isalnum(static_cast<unsigned char>(rhs[position - 1])) && rhs[position - 1] != '_');
+							const size_t end = position + entry.first.size();
+							const bool right = end == rhs.size() || (!std::isalnum(static_cast<unsigned char>(rhs[end])) && rhs[end] != '_');
+							if(left && right) { rhs.replace(position, entry.first.size(), "(" + entry.second + ")"); position += entry.second.size() + 2; }
+							else position = end;
+						}
 					}
+					std::string display;
+					if(!fast_numeric_result(rhs, display)) { used_fast_path = false; break; }
+					recalculated.push_back(LineResult{display, false});
+				}
+				if(!used_fast_path) recalculated = evaluate_note(calculator, dependent_expressions);
+				for(size_t index = 0; index < dependent_indices.size() && index < recalculated.size(); ++index) {
+					const int line_index = dependent_indices[index];
+					updated[line_index] = recalculated[index];
+					const size_t next_equals = lines[line_index].find('=');
+					if(next_equals == std::string::npos) continue;
+					const std::string next_name = trim_copy(lines[line_index].substr(0, next_equals));
+					if(recalculated[index].display == "undefined" || recalculated[index].display == "error") assignment_values_.erase(next_name);
+					else assignment_values_[next_name] = recalculated[index].display;
 				}
 			}
 			lines_ = lines;
