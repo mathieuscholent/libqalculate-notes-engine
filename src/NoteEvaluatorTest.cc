@@ -65,6 +65,22 @@ int main() {
 	assert(second_session[2].display == "100");
 	assert(second_session[3].display == "4");
 	assert(second_session[4].display == "7");
+	const auto with_blank = session.evaluate(session_calculator, {
+		"x = 2", "", "y = x + 1", "z = y + 1"
+	});
+	assert(with_blank.size() == 4);
+	assert(with_blank[2].display == "3");
+	const auto after_blank_removal = session.evaluate(session_calculator, {
+		"x = 2", "y = x + 1", "z = y + 1"
+	}, 1);
+	assert(after_blank_removal.size() == 3);
+	assert(after_blank_removal[1].display == "3");
+	const auto after_variable_edit = session.evaluate(session_calculator, {
+		"x = 4", "y = x + 1", "z = y + 1"
+	}, 0);
+	assert(after_variable_edit[0].display == "4");
+	assert(after_variable_edit[1].display == "5");
+	assert(after_variable_edit[2].display == "6");
 	const std::vector<std::string> independent_lines = {"x = 5", "2 + 2", "y = x + 1"};
 	const auto independent_first = session.evaluate(session_calculator, independent_lines);
 	assert(independent_first[1].display == "4");

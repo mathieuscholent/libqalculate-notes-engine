@@ -827,6 +827,44 @@ std::vector<LineResult> NoteEvaluationSession::evaluate(Calculator &calculator, 
 			return results_;
 		}
 	}
+	// Adding/removing comments or blank lines changes row alignment but not
+	// calculator state. Reuse cached results by exact source-line identity.
+	if(!lines_.empty() && !results_.empty()) {
+		std::map<std::string, std::vector<size_t>> previous_indices;
+		for(size_t index = 0; index < lines_.size() && index < results_.size(); ++index) {
+			if(!is_comment_or_empty(lines_[index])) previous_indices[lines_[index]].push_back(index);
+		}
+		std::map<std::string, size_t> consumed;
+		std::vector<LineResult> updated;
+		updated.reserve(lines.size());
+		bool reusable_structure = true;
+		for(const std::string &line : lines) {
+			if(is_comment_or_empty(line)) {
+				updated.push_back(LineResult());
+				continue;
+			}
+			const auto found = previous_indices.find(line);
+			const size_t occurrence = consumed[line]++;
+			if(found == previous_indices.end() || occurrence >= found->second.size()) {
+				reusable_structure = false;
+				break;
+			}
+			updated.push_back(results_[found->second[occurrence]]);
+		}
+		if(reusable_structure) {
+			lines_ = lines;
+			results_ = updated;
+			assignment_values_.clear();
+			for(size_t index = 0; index < lines.size() && index < results_.size(); ++index) {
+				const size_t equals = lines[index].find('=');
+				if(equals == std::string::npos) continue;
+				if(results_[index].display == "undefined" || results_[index].display == "error") continue;
+				const std::string name = trim_copy(lines[index].substr(0, equals));
+				if(!name.empty()) assignment_values_[name] = results_[index].display;
+			}
+			return results_;
+		}
+	}
 	if(changed_line >= 0 && changed_line < static_cast<int>(lines.size()) &&
 		lines_.size() == lines.size() && results_.size() == lines.size()) {
 		const size_t equals = lines[changed_line].find('=');
