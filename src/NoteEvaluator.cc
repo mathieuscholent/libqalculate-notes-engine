@@ -268,6 +268,18 @@ static bool define_function(Calculator &calculator, std::string source) {
 		if(comma == std::string::npos) break;
 		start = comma + 1;
 	}
+	// Differentiate before replacing formal arguments. Replacing x with a
+	// call-time value in diff(x^2) would turn f(5) into diff(5^2), whose
+	// derivative is correctly—but undesirably here—zero.
+	if(args.size() == 1 && formula.rfind("diff(", 0) == 0 && formula.back() == ')') {
+		const std::string inner = formula.substr(5, formula.size() - 6);
+		MathStructure differentiated;
+		EvaluationOptions options;
+		options.parse_options.unknowns_enabled = true;
+		const std::string explicit_diff = "diff(" + inner + "," + args[0] + ")";
+		if(calculator.calculate(&differentiated, explicit_diff, 500, options) && !differentiated.isUndefined())
+			formula = differentiated.print(PrintOptions(), false, false, TAG_TYPE_TERMINAL);
+	}
 	std::vector<size_t> order(args.size());
 	for(size_t i = 0; i < args.size(); ++i) order[i] = i;
 	std::sort(order.begin(), order.end(), [&](size_t a, size_t b) { return args[a].size() > args[b].size(); });
@@ -700,6 +712,17 @@ std::vector<LineResult> NoteEvaluationSession::evaluate(Calculator &calculator, 
 	const bool reusable = safe_expression_edit &&
 		changed_line >= 0 &&
 		changed_line < static_cast<int>(lines.size()) && lines_.size() == lines.size() && results_.size() == lines.size();
+	// Appending a line preserves the calculator context and all prior results.
+	// Evaluate only the new line instead of falling back to a full-note pass.
+	if(changed_line == static_cast<int>(lines.size()) - 1 &&
+		lines_.size() + 1 == lines.size() && results_.size() + 1 == lines.size()) {
+		std::vector<LineResult> updated = results_;
+		const std::vector<LineResult> appended = evaluate_note(calculator, {lines.back()});
+		updated.push_back(appended.front());
+		lines_ = lines;
+		results_ = updated;
+		return results_;
+	}
 	if(reusable) {
 		std::vector<LineResult> updated = results_;
 		const std::vector<std::string> one_line = {lines[changed_line]};
@@ -721,7 +744,7 @@ std::vector<LineResult> NoteEvaluationSession::evaluate(Calculator &calculator, 
 			return results_;
 		}
 	}
-	if(ordinary_independent && changed_line >= 0 && changed_line < static_cast<int>(lines.size()) &&
+	if(changed_line >= 0 && changed_line < static_cast<int>(lines.size()) &&
 		lines_.size() == lines.size() && results_.size() == lines.size()) {
 		const size_t equals = lines[changed_line].find('=');
 		if(equals != std::string::npos && lines[changed_line].find('=', equals + 1) == std::string::npos) {
@@ -729,6 +752,20 @@ std::vector<LineResult> NoteEvaluationSession::evaluate(Calculator &calculator, 
 			const std::vector<LineResult> changed = evaluate_note(calculator, {lines[changed_line]});
 			updated[changed_line] = changed.front();
 			const std::string changed_name = trim_copy(lines[changed_line].substr(0, equals));
+			// Function definitions are assignments syntactically, but changing one
+			// changes the evaluator's callable environment rather than one scalar
+			// dependency. Keep those edits on the full-note path.
+			if(changed_name.empty() || changed_name.find('(') != std::string::npos) {
+				results_ = evaluate_note(calculator, lines);
+				lines_ = lines;
+				assignment_values_.clear();
+				for(size_t i = 0; i < lines.size() && i < results_.size(); ++i) {
+					const size_t line_equals = lines[i].find('=');
+					if(line_equals != std::string::npos && results_[i].display != "undefined" && results_[i].display != "error")
+						assignment_values_[trim_copy(lines[i].substr(0, line_equals))] = results_[i].display;
+				}
+				return results_;
+			}
 			if(updated[changed_line].display != "undefined" && updated[changed_line].display != "error") assignment_values_[changed_name] = updated[changed_line].display;
 			else assignment_values_.erase(changed_name);
 			// Only propagate through assignments which depend on the edited one.

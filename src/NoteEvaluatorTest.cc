@@ -19,6 +19,12 @@ int main() {
 	assert(!results[1].has_error && !results[1].display.empty());
 	assert(!results[2].has_error && results[2].display == "defined");
 	assert(!results[3].has_error && !results[3].display.empty());
+	const auto differentiated_function = qalc_notes::evaluate_note(calculator, {
+		"f(x) = diff(x^2)", "f(x)", "f(5)", "x = 5", "f(x)"
+	});
+	assert(differentiated_function[0].display == "defined");
+	assert(differentiated_function[2].display == "10");
+	assert(differentiated_function[4].display == "10");
 	const std::vector<std::string> indexing_lines = {
 		"values = [10, 20, 30, 40]",
 		"values[0]",
