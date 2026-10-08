@@ -13,6 +13,7 @@
 #include <stdexcept>
 #include <fcntl.h>
 #include <unistd.h>
+#include <cstdio>
 
 namespace qalc_notes {
 
@@ -74,6 +75,10 @@ static void normalize_symbolic_display(std::string &value) {
 }
 
 static bool contains_identifier(const std::string &expression, const std::string &name) {
+	// An empty identifier matches at every position and would make the search
+	// loop below non-terminating. Blank editor rows are valid input and can
+	// reach this helper during incremental structural edits.
+	if(name.empty()) return false;
 	size_t position = 0;
 	while((position = expression.find(name, position)) != std::string::npos) {
 		const bool left = position == 0 || !(std::isalnum(static_cast<unsigned char>(expression[position - 1])) || expression[position - 1] == '_');
@@ -405,6 +410,7 @@ static bool define_function(Calculator &calculator, std::string source) {
 }
 
 std::vector<LineResult> evaluate_note(Calculator &calculator, const std::vector<std::string> &lines) {
+	std::fprintf(stderr, "[notes-engine] evaluate_note begin lines=%zu\n", lines.size());
 	std::vector<LineResult> results;
 	results.reserve(lines.size());
 	// Re-evaluation must start from a clean note state. The GUI reuses one
@@ -744,6 +750,7 @@ std::vector<LineResult> evaluate_note(Calculator &calculator, const std::vector<
 }
 
 std::vector<LineResult> NoteEvaluationSession::evaluate(Calculator &calculator, const std::vector<std::string> &lines, int changed_line) {
+	std::fprintf(stderr, "[notes-engine] session begin old=%zu new=%zu changed=%d\n", lines_.size(), lines.size(), changed_line);
 	if(lines == lines_ && results_.size() == lines.size()) return results_;
 	const bool ordinary_independent = std::all_of(lines.begin(), lines.end(), [](const std::string &line) {
 		const size_t first = line.find_first_not_of(" \t");
@@ -795,6 +802,7 @@ std::vector<LineResult> NoteEvaluationSession::evaluate(Calculator &calculator, 
 	const bool reusable = safe_expression_edit &&
 		changed_line >= 0 &&
 		changed_line < static_cast<int>(lines.size()) && lines_.size() == lines.size() && results_.size() == lines.size();
+	std::fprintf(stderr, "[notes-engine] flags ordinary=%d safe=%d reusable=%d\n", ordinary_independent, safe_expression_edit, reusable);
 	// Appending a line preserves the calculator context and all prior results.
 	// Evaluate only the new line instead of falling back to a full-note pass.
 	if(changed_line == static_cast<int>(lines.size()) - 1 &&
@@ -807,6 +815,7 @@ std::vector<LineResult> NoteEvaluationSession::evaluate(Calculator &calculator, 
 		return results_;
 	}
 	if(reusable) {
+		std::fprintf(stderr, "[notes-engine] reusable path\n");
 		std::vector<LineResult> updated = results_;
 		const std::vector<std::string> one_line = {lines[changed_line]};
 		const std::vector<LineResult> changed = evaluate_note(calculator, one_line);
@@ -830,6 +839,7 @@ std::vector<LineResult> NoteEvaluationSession::evaluate(Calculator &calculator, 
 	// Adding/removing comments or blank lines changes row alignment but not
 	// calculator state. Reuse cached results by exact source-line identity.
 	if(!lines_.empty() && !results_.empty()) {
+		std::fprintf(stderr, "[notes-engine] structure reuse path\n");
 		std::map<std::string, std::vector<size_t>> previous_indices;
 		for(size_t index = 0; index < lines_.size() && index < results_.size(); ++index) {
 			if(!is_comment_or_empty(lines_[index])) previous_indices[lines_[index]].push_back(index);
@@ -961,6 +971,7 @@ std::vector<LineResult> NoteEvaluationSession::evaluate(Calculator &calculator, 
 			return results_;
 		}
 	}
+	std::fprintf(stderr, "[notes-engine] full evaluate path\n");
 	results_ = evaluate_note(calculator, lines);
 	lines_ = lines;
 	assignment_values_.clear();
