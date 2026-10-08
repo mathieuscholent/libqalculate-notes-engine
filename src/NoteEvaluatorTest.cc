@@ -81,6 +81,17 @@ int main() {
 	assert(after_variable_edit[0].display == "4");
 	assert(after_variable_edit[1].display == "5");
 	assert(after_variable_edit[2].display == "6");
+	const auto transitive_initial = session.evaluate(session_calculator, {
+		"x = 1", "y = x + 1", "z = y + 1", "answer = z + 1"
+	});
+	assert(transitive_initial[3].display == "4");
+	const auto after_transitive_variable_edit = session.evaluate(session_calculator, {
+		"x = 5", "y = x + 1", "z = y + 1", "answer = z + 1"
+	}, 0);
+	assert(after_transitive_variable_edit[0].display == "5");
+	assert(after_transitive_variable_edit[1].display == "6");
+	assert(after_transitive_variable_edit[2].display == "7");
+	assert(after_transitive_variable_edit[3].display == "8");
 	const std::vector<std::string> independent_lines = {"x = 5", "2 + 2", "y = x + 1"};
 	const auto independent_first = session.evaluate(session_calculator, independent_lines);
 	assert(independent_first[1].display == "4");

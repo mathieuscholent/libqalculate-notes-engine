@@ -912,18 +912,13 @@ std::vector<LineResult> NoteEvaluationSession::evaluate(Calculator &calculator, 
 			for(int i = changed_line + 1; i < static_cast<int>(lines.size()); ++i) {
 				std::string expression = lines[i];
 				bool depends = false;
+				// Walk downstream in source order. A dependent assignment must be
+				// committed before the next line is inspected, otherwise a chain such
+				// as x -> y -> z substitutes the cached (old) value of y into z.
 				for(const auto &entry : assignment_values_) {
 					if(changed_names.find(entry.first) == changed_names.end()) continue;
 					if(contains_identifier(expression, entry.first)) {
 						depends = true;
-						size_t position = 0;
-						while((position = expression.find(entry.first, position)) != std::string::npos) {
-							const bool left = position == 0 || (!std::isalnum(static_cast<unsigned char>(expression[position - 1])) && expression[position - 1] != '_');
-							const size_t end = position + entry.first.size();
-							const bool right = end == expression.size() || (!std::isalnum(static_cast<unsigned char>(expression[end])) && expression[end] != '_');
-							if(left && right) { expression.replace(position, entry.first.size(), "(" + entry.second + ")"); position += entry.second.size() + 2; }
-							else position = end;
-						}
 					}
 				}
 				if(!depends) continue;
@@ -937,25 +932,32 @@ std::vector<LineResult> NoteEvaluationSession::evaluate(Calculator &calculator, 
 			}
 		if(!dependent_expressions.empty()) {
 				std::vector<LineResult> recalculated;
-				bool used_fast_path = true;
 				for(const std::string &expression : dependent_expressions) {
-					const size_t expression_equals = expression.find('=');
-					std::string rhs = expression_equals == std::string::npos ? expression : expression.substr(expression_equals + 1);
+					std::string evaluated_expression = expression;
 					for(const auto &entry : assignment_values_) {
 						size_t position = 0;
-						while((position = rhs.find(entry.first, position)) != std::string::npos) {
-							const bool left = position == 0 || (!std::isalnum(static_cast<unsigned char>(rhs[position - 1])) && rhs[position - 1] != '_');
+						while((position = evaluated_expression.find(entry.first, position)) != std::string::npos) {
+							const bool left = position == 0 || (!std::isalnum(static_cast<unsigned char>(evaluated_expression[position - 1])) && evaluated_expression[position - 1] != '_');
 							const size_t end = position + entry.first.size();
-							const bool right = end == rhs.size() || (!std::isalnum(static_cast<unsigned char>(rhs[end])) && rhs[end] != '_');
-							if(left && right) { rhs.replace(position, entry.first.size(), "(" + entry.second + ")"); position += entry.second.size() + 2; }
+							const bool right = end == evaluated_expression.size() || (!std::isalnum(static_cast<unsigned char>(evaluated_expression[end])) && evaluated_expression[end] != '_');
+							if(left && right) { evaluated_expression.replace(position, entry.first.size(), "(" + entry.second + ")"); position += entry.second.size() + 2; }
 							else position = end;
 						}
 					}
 					std::string display;
-					if(!fast_numeric_result(rhs, display)) { used_fast_path = false; break; }
+					if(!fast_numeric_result(evaluated_expression, display)) {
+						const std::vector<LineResult> evaluated = evaluate_note(calculator, {evaluated_expression});
+						display = evaluated.front().display;
+					}
 					recalculated.push_back(LineResult{display, false});
+					const size_t line_index = dependent_indices[recalculated.size() - 1];
+					const size_t next_equals = lines[line_index].find('=');
+					if(next_equals != std::string::npos) {
+						const std::string next_name = trim_copy(lines[line_index].substr(0, next_equals));
+						if(display == "undefined" || display == "error") assignment_values_.erase(next_name);
+						else assignment_values_[next_name] = display;
+					}
 				}
-				if(!used_fast_path) recalculated = evaluate_note(calculator, dependent_expressions);
 				for(size_t index = 0; index < dependent_indices.size() && index < recalculated.size(); ++index) {
 					const int line_index = dependent_indices[index];
 					updated[line_index] = recalculated[index];
