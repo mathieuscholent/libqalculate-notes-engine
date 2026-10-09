@@ -299,12 +299,21 @@ bool Executor::executeRange(const std::vector<Statement> &program, size_t first,
 std::pair<size_t, size_t> Executor::rangeForLine(const std::vector<Statement> &program,
 	unsigned int source_line) {
 	if(program.empty()) return std::make_pair(0, 0);
+	std::function<bool(const Statement &)> contains_line = [&](const Statement &statement) {
+		if(statement.line == source_line) return true;
+		for(const Statement &child : statement.body) {
+			if(contains_line(child)) return true;
+		}
+		return false;
+	};
 	for(size_t index = 0; index < program.size(); ++index) {
-		const unsigned int next_line = index + 1 < program.size() ? program[index + 1].line : UINT_MAX;
-		if(source_line >= program[index].line && source_line < next_line)
+		if(contains_line(program[index]))
 			return std::make_pair(index, index + 1);
 	}
-	return std::make_pair(0, program.size());
+	// The changed source line is not represented by a parsed statement (for
+	// example a blank or incomplete line between blocks). Do not accidentally
+	// select the preceding loop from a line-number gap.
+	return std::make_pair(program.size(), program.size());
 }
 
 }

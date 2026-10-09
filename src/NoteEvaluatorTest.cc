@@ -114,6 +114,8 @@ int main() {
 	}, script_program, script_error));
 	const auto loop_range = qalc_script::Executor::rangeForLine(script_program, 4);
 	assert(loop_range.first == 1 && loop_range.second == 2);
+	const auto unrelated_gap = qalc_script::Executor::rangeForLine(script_program, 5);
+	assert(unrelated_gap.first == script_program.size() && unrelated_gap.second == script_program.size());
 	qalc_notes::NoteEvaluationSession script_session;
 	Calculator script_session_calculator;
 	script_session_calculator.loadGlobalDefinitions();
