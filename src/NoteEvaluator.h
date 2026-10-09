@@ -64,6 +64,7 @@ bool restore_script_state(Calculator &calculator, const ScriptState &state,
 // safely.
 class NoteEvaluationSession {
 public:
+	void reset();
 	std::vector<LineResult> evaluate(Calculator &calculator, const std::vector<std::string> &lines,
 		int changed_line = -1, const Cancellation &cancelled = {});
 private:

@@ -898,6 +898,13 @@ std::vector<LineResult> evaluate_note(Calculator &calculator, const std::vector<
 	return results;
 }
 
+void NoteEvaluationSession::reset() {
+	lines_.clear();
+	results_.clear();
+	assignment_values_.clear();
+	script_state_ = ScriptState{};
+}
+
 std::vector<LineResult> NoteEvaluationSession::evaluate(Calculator &calculator, const std::vector<std::string> &lines,
 	int changed_line, const Cancellation &cancelled) {
 	if(cancelled && cancelled()) return {};
