@@ -1108,6 +1108,13 @@ std::vector<LineResult> NoteEvaluationSession::evaluate(Calculator &calculator, 
 		for(const unsigned int index : next_script_state.executed_lines)
 			if(index < recalculated.size() && index < merged.size()) merged[index] = recalculated[index];
 		results_ = merged;
+		// Boundaries at or after the edited source line may depend on values
+		// changed by this run. Retain only the valid prefix and replace the
+		// invalidated suffix with freshly captured snapshots.
+		for(auto boundary = script_state_.boundaries.begin(); boundary != script_state_.boundaries.end();) {
+			if(static_cast<int>(boundary->first) > changed_line) boundary = script_state_.boundaries.erase(boundary);
+			else ++boundary;
+		}
 		for(const auto &entry : next_script_state.boundaries) script_state_.boundaries[entry.first] = entry.second;
 		script_state_.environment = next_script_state.environment;
 		script_state_.calculator_checkpoint = next_script_state.calculator_checkpoint;

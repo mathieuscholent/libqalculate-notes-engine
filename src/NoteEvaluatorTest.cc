@@ -128,6 +128,11 @@ int main() {
 	}, 2);
 	assert(script_second[2].display == "[2 · 3 · 4]");
 	assert(script_second[3].display == "42");
+	const auto script_third = script_session.evaluate(script_session_calculator, {
+		"values = [1, 2, 3]", "for elt in values:", "  elt + 2", "unrelated = 42"
+	}, 2);
+	assert(script_third[2].display == "[3 · 4 · 5]");
+	assert(script_third[3].display == "42");
 	const std::vector<std::string> independent_lines = {"x = 5", "2 + 2", "y = x + 1"};
 	const auto independent_first = session.evaluate(session_calculator, independent_lines);
 	assert(independent_first[1].display == "4");
