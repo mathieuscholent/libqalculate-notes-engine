@@ -207,6 +207,24 @@ static bool retry_script_differentiation(Calculator &calculator, const std::stri
 	return calculator.calculate(&value, "diff(" + differentiated_inner + "," + differentiation_variable + ")", 500, options);
 }
 
+static void merge_script_rows(std::vector<LineResult> &results,
+	const std::vector<std::vector<std::string>> &output,
+	const std::vector<LineResult> &baseline,
+	const std::vector<bool> &function_lines,
+	const std::vector<bool> &defined_functions) {
+	for(size_t index = 0; index < results.size(); ++index) {
+		if(function_lines[index]) results[index].display = defined_functions[index] ? "defined" : "undefined";
+		else if(!output[index].empty()) {
+			results[index].display = output[index].size() == 1 ? output[index][0] : "[";
+			for(size_t value = output[index].size() > 1 ? 0 : output[index].size(); value < output[index].size(); ++value) {
+				if(value > 0) results[index].display += " · ";
+				results[index].display += output[index][value];
+			}
+			if(output[index].size() > 1) results[index].display += "]";
+		} else if(index < baseline.size()) results[index] = baseline[index];
+	}
+}
+
 class FastNumericParser {
 public:
 	 explicit FastNumericParser(const std::string &text) : text_(text) {}
@@ -687,18 +705,7 @@ std::vector<LineResult> evaluate_note(Calculator &calculator, const std::vector<
 				// pass after a script condition fails. Those values are stale.
 			}
 		}
-		for(size_t i = 0; i < results.size(); ++i) {
-			if(function_lines[i]) results[i].display = defined_functions[i] ? "defined" : "undefined";
-			else if(!output[i].empty()) {
-				results[i].display = output[i].size() == 1 ? output[i][0] : "[";
-				for(size_t value = output[i].size() > 1 ? 0 : output[i].size(); value < output[i].size(); ++value) {
-					if(value > 0) results[i].display += " · ";
-					results[i].display += output[i][value];
-				}
-				if(output[i].size() > 1) results[i].display += "]";
-			}
-			else if(i < baseline.size()) results[i] = baseline[i];
-		}
+		merge_script_rows(results, output, baseline, function_lines, defined_functions);
 		// A failed script statement is local to that statement. Do not mark
 		// later or unrelated baseline lines undefined: ordinary note lines have
 		// independent scope and their already-computed results remain valid.
