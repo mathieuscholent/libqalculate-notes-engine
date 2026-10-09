@@ -607,12 +607,25 @@ std::vector<LineResult> evaluate_note(Calculator &calculator, const std::vector<
 			if(first != std::string::npos) trimmed.erase(0, first);
 			if((!trimmed.empty() && trimmed.back() == ':') || (!baseline_source[i].empty() && (baseline_source[i][0] == ' ' || baseline_source[i][0] == '\t'))) baseline_source[i].clear();
 		}
-		// The baseline pass is only used for ordinary, non-script lines. Reset
-		// the shared calculator afterwards before executing the real script;
-		// libqalculate expects one Calculator instance per process.
-		const std::vector<LineResult> baseline = input_state == nullptr
+		// A script-covered document does not need a second ordinary-note pass:
+		// the script executor already evaluates its assignments and expressions.
+		// Keep the baseline only for mixed documents containing lines that the
+		// script parser did not represent.
+		std::vector<bool> script_lines(lines.size(), false);
+		for(size_t statement_index = 0; statement_index < program.size(); ++statement_index) {
+			const unsigned int begin = program[statement_index].line;
+			const unsigned int end = statement_index + 1 < program.size()
+				? program[statement_index + 1].line : static_cast<unsigned int>(lines.size() + 1);
+			for(unsigned int line = begin; line < end && line <= lines.size(); ++line) script_lines[line - 1] = true;
+		}
+		bool needs_baseline = false;
+		for(size_t index = 0; index < lines.size(); ++index) {
+			if(function_lines[index] || is_comment_or_empty(lines[index])) continue;
+			if(!script_lines[index]) { needs_baseline = true; break; }
+		}
+		const std::vector<LineResult> baseline = input_state == nullptr && needs_baseline
 			? evaluate_note(calculator, baseline_source) : std::vector<LineResult>(lines.size());
-		if(input_state == nullptr) {
+		if(input_state == nullptr && needs_baseline) {
 			calculator.resetVariables();
 			calculator.resetFunctions();
 			calculator.loadGlobalDefinitions();
