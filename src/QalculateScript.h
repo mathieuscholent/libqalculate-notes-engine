@@ -36,6 +36,11 @@ public:
 	bool execute(const std::vector<Statement> &program, const Evaluate &evaluate, std::string &error) const;
 	bool execute(const std::vector<Statement> &program, const Evaluate &evaluate, std::string &error, Environment &environment) const;
 	bool execute(const std::vector<Statement> &program, const Evaluate &evaluate, std::string &error, Environment &environment, const Checkpoint &checkpoint) const;
+	bool executeRange(const std::vector<Statement> &program, size_t first, size_t last,
+		const Evaluate &evaluate, std::string &error, Environment &environment,
+		const Checkpoint &checkpoint) const;
+	static std::pair<size_t, size_t> rangeForLine(const std::vector<Statement> &program,
+		unsigned int source_line);
 	unsigned int currentLine() const { return current_line_; }
 
 private:

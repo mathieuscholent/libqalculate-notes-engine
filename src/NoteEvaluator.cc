@@ -17,6 +17,13 @@
 
 namespace qalc_notes {
 
+static bool run_script_range(const std::vector<qalc_script::Statement> &program,
+	 size_t first, size_t last, const qalc_script::Executor::Evaluate &evaluate,
+	 std::string &error, qalc_script::Executor::Environment &environment,
+	 const qalc_script::Executor::Checkpoint &checkpoint, qalc_script::Executor &executor) {
+	return executor.executeRange(program, first, last, evaluate, error, environment, checkpoint);
+}
+
 std::string save_calculator_checkpoint(Calculator &calculator) {
 	return calculator.saveTemporaryDefinitions();
 }
@@ -34,6 +41,13 @@ bool restore_calculator_checkpoint(Calculator &calculator, const std::string &ch
 	const bool restored = written == static_cast<ssize_t>(checkpoint.size()) && calculator.loadDefinitions(path, true, false) >= 0;
 	unlink(path);
 	return restored;
+}
+
+bool restore_script_state(Calculator &calculator, const ScriptState &state,
+	qalc_script::Executor::Environment &environment) {
+	if(!restore_calculator_checkpoint(calculator, state.calculator_checkpoint)) return false;
+	environment = state.environment;
+	return true;
 }
 
 
@@ -95,6 +109,102 @@ static std::string trim_copy(const std::string &value) {
 	if(first == std::string::npos) return "";
 	const size_t last = value.find_last_not_of(" \t");
 	return value.substr(first, last - first + 1);
+}
+
+static std::string substitute_script_scope(const std::string &expression,
+	const qalc_script::Executor::Environment &scope) {
+	std::string evaluated = expression;
+	const bool differentiated_expression = evaluated.rfind("diff(", 0) == 0;
+	for(const auto &entry : scope) {
+		size_t position = 0;
+		while((position = evaluated.find(entry.first, position)) != std::string::npos) {
+			const size_t comma = differentiated_expression ? evaluated.find(',') : std::string::npos;
+			if(comma != std::string::npos && position >= comma) break;
+			const bool left = position == 0 || (!std::isalnum(static_cast<unsigned char>(evaluated[position - 1])) && evaluated[position - 1] != '_');
+			const size_t end = position + entry.first.size();
+			const bool right = end == evaluated.size() || (!std::isalnum(static_cast<unsigned char>(evaluated[end])) && evaluated[end] != '_');
+			if(left && right) {
+				std::string replacement = entry.second.scalar;
+				if(entry.second.sequence) {
+					replacement = "[";
+					for(size_t item = 0; item < entry.second.items.size(); ++item) {
+						if(item > 0) replacement += ", ";
+						replacement += entry.second.items[item].scalar;
+					}
+					replacement += "]";
+				}
+				evaluated.replace(position, entry.first.size(), replacement);
+				position += replacement.size();
+			} else position = end;
+		}
+	}
+	return evaluated;
+}
+
+static void normalize_script_value(std::string &value) {
+	normalize_symbolic_display(value);
+	const std::string alias = "notes_diff_symbol";
+	for(const std::string &symbol : {std::string("q"), std::string("w")}) {
+		size_t position = 0;
+		while((position = value.find(alias, position)) != std::string::npos) {
+			value.replace(position, alias.size(), symbol);
+			position += symbol.size();
+		}
+	}
+}
+
+static bool notes_vector_extension(Calculator &calculator, const std::string &expression,
+	const EvaluationOptions &options, const PrintOptions &print_options, std::string &display);
+
+struct ScriptCalculation {
+	MathStructure value;
+	std::string extension_display;
+	bool extension_calculated = false;
+	bool calculated = false;
+};
+
+static ScriptCalculation calculate_script_expression(Calculator &calculator,
+	const std::string &expression, const EvaluationOptions &options,
+	const PrintOptions &print_options) {
+	ScriptCalculation result;
+	result.extension_calculated = notes_vector_extension(calculator, expression, options, print_options, result.extension_display);
+	result.calculated = result.extension_calculated || calculator.calculate(&result.value, expression, 500, options);
+	return result;
+}
+
+static bool retry_script_differentiation(Calculator &calculator, const std::string &expression,
+	MathStructure &value, const EvaluationOptions &options) {
+	if(expression.rfind("diff(", 0) != 0 || expression.find(',') != std::string::npos) return false;
+	const size_t begin = expression.find('(') + 1;
+	const size_t end = expression.rfind(')');
+	if(end <= begin) return false;
+	const std::string inner = expression.substr(begin, end - begin);
+	std::string variable;
+	for(size_t p = 0; p < inner.size(); ++p) {
+		if(std::isalpha(static_cast<unsigned char>(inner[p])) || inner[p] == '_') {
+			size_t e = p + 1;
+			while(e < inner.size() && (std::isalnum(static_cast<unsigned char>(inner[e])) || inner[e] == '_')) ++e;
+			const std::string candidate = inner.substr(p, e - p);
+			if(candidate != "diff") { variable = candidate; break; }
+			p = e - 1;
+		}
+	}
+	if(variable.empty()) return false;
+	const bool aliased = variable == "q" || variable == "w";
+	const std::string differentiation_variable = aliased ? "notes_diff_symbol" : variable;
+	std::string differentiated_inner = inner;
+	if(aliased) {
+		size_t position = 0;
+		while((position = differentiated_inner.find(variable, position)) != std::string::npos) {
+			const bool left = position == 0 || !(std::isalnum(static_cast<unsigned char>(differentiated_inner[position - 1])) || differentiated_inner[position - 1] == '_');
+			const size_t end_position = position + variable.size();
+			const bool right = end_position == differentiated_inner.size() || !(std::isalnum(static_cast<unsigned char>(differentiated_inner[end_position])) || differentiated_inner[end_position] == '_');
+			if(left && right) { differentiated_inner.replace(position, variable.size(), differentiation_variable); position += differentiation_variable.size(); }
+			else position = end_position;
+		}
+	}
+	calculator.clearMessages();
+	return calculator.calculate(&value, "diff(" + differentiated_inner + "," + differentiation_variable + ")", 500, options);
 }
 
 class FastNumericParser {
@@ -409,16 +519,19 @@ static bool define_function(Calculator &calculator, std::string source) {
 	return true;
 }
 
-std::vector<LineResult> evaluate_note(Calculator &calculator, const std::vector<std::string> &lines) {
+std::vector<LineResult> evaluate_note(Calculator &calculator, const std::vector<std::string> &lines,
+	ScriptState *script_state, const ScriptState *input_state, int changed_line) {
 	std::fprintf(stderr, "[notes-engine] evaluate_note begin lines=%zu\n", lines.size());
 	std::vector<LineResult> results;
 	results.reserve(lines.size());
 	// Re-evaluation must start from a clean note state. The GUI reuses one
 	// Calculator instance, so user variables/functions from an older document
 	// would otherwise turn symbols such as x and q into stale constants.
-	calculator.resetVariables();
-	calculator.resetFunctions();
-	calculator.loadGlobalDefinitions();
+	if(input_state == nullptr) {
+		calculator.resetVariables();
+		calculator.resetFunctions();
+		calculator.loadGlobalDefinitions();
+	}
 	EvaluationOptions evaluation_options;
 	// Treat symbols that have never been assigned as symbolic Qalculate
 	// unknowns. Explicit empty assignments and invalid definitions are tracked
@@ -433,7 +546,7 @@ std::vector<LineResult> evaluate_note(Calculator &calculator, const std::vector<
 		const size_t equals = line.find('=');
 		if(open != std::string::npos && close != std::string::npos && equals != std::string::npos && open < close && close < equals) {
 			function_lines[i] = true;
-			defined_functions[i] = define_function(calculator, line);
+			defined_functions[i] = input_state == nullptr && define_function(calculator, line);
 			calculator.clearMessages();
 		}
 	}
@@ -474,101 +587,99 @@ std::vector<LineResult> evaluate_note(Calculator &calculator, const std::vector<
 		// The baseline pass is only used for ordinary, non-script lines. Reset
 		// the shared calculator afterwards before executing the real script;
 		// libqalculate expects one Calculator instance per process.
-		const std::vector<LineResult> baseline = evaluate_note(calculator, baseline_source);
-		calculator.resetVariables();
-		calculator.resetFunctions();
-		calculator.loadGlobalDefinitions();
-		for(size_t i = 0; i < lines.size(); ++i) {
-			if(function_lines[i]) defined_functions[i] = define_function(calculator, lines[i]);
+		const std::vector<LineResult> baseline = input_state == nullptr
+			? evaluate_note(calculator, baseline_source) : std::vector<LineResult>(lines.size());
+		if(input_state == nullptr) {
+			calculator.resetVariables();
+			calculator.resetFunctions();
+			calculator.loadGlobalDefinitions();
 		}
-		std::vector<std::vector<std::string>> output(lines.size());
-		qalc_script::Executor::Environment environment;
+		for(size_t i = 0; i < lines.size(); ++i) {
+			if(function_lines[i] && input_state == nullptr) defined_functions[i] = define_function(calculator, lines[i]);
+		}
+		ScriptExecutionContext execution;
+		execution.output.resize(lines.size());
+		qalc_script::Executor::Environment &environment = execution.environment;
+		size_t execution_first = 0;
+		size_t execution_last = program.size();
+		if(input_state != nullptr && changed_line >= 0) {
+			const auto selected = qalc_script::Executor::rangeForLine(program, static_cast<unsigned int>(changed_line + 1));
+			execution_first = selected.first;
+			execution_last = selected.second;
+			std::set<std::string> changed_names;
+			for(size_t index = execution_first; index < execution_last; ++index) {
+				const size_t equals = program[index].text.find('=');
+				if(equals == std::string::npos) continue;
+				const std::string name = trim_copy(program[index].text.substr(0, equals));
+				if(!name.empty() && name.find_first_not_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_") == std::string::npos) changed_names.insert(name);
+			}
+			while(execution_last < program.size()) {
+				bool depends = false;
+				const std::string &text = program[execution_last].text;
+				for(const std::string &name : changed_names) if(contains_identifier(text, name)) { depends = true; break; }
+				if(!depends) break;
+				const size_t equals = text.find('=');
+				if(equals != std::string::npos) {
+					const std::string name = trim_copy(text.substr(0, equals));
+					if(!name.empty()) changed_names.insert(name);
+				}
+				++execution_last;
+			}
+			const unsigned int boundary_line = program[execution_first].line;
+			const auto boundary = input_state->boundaries.find(boundary_line);
+			if(boundary != input_state->boundaries.end()) {
+				if(!restore_script_state(calculator, ScriptState{
+					boundary->second.environment, boundary->second.calculator_checkpoint, {}, {}
+				}, environment)) {
+					execution_first = 0;
+					execution_last = program.size();
+				}
+			} else {
+				execution_first = 0;
+				execution_last = program.size();
+			}
+			for(size_t index = execution_first; index < execution_last; ++index) {
+				const unsigned int begin_line = program[index].line;
+				const unsigned int end_line = index + 1 < program.size() ? program[index + 1].line : static_cast<unsigned int>(lines.size() + 1);
+				for(unsigned int line = begin_line; line < end_line; ++line) execution.executed_lines.push_back(line - 1);
+			}
+		}
+		std::vector<std::vector<std::string>> &output = execution.output;
 		qalc_script::Executor executor;
-		unsigned int failed_line = 0;
-		std::vector<std::vector<std::string>> *active_output = nullptr;
+		unsigned int &failed_line = execution.failed_line;
 		qalc_script::Executor::Evaluate evaluate = [&](const std::string &expression, const qalc_script::Executor::Environment &scope, qalc_script::Value &value, std::string &evaluation_error, bool display) {
 			std::string evaluated = expression;
-			const bool differentiated_expression = evaluated.rfind("diff(", 0) == 0;
 			for(const auto &entry : scope) {
 				if(entry.second.undefined && contains_identifier(evaluated, entry.first)) {
 					evaluation_error = "undefined";
 					return false;
 				}
-				size_t position = 0;
-				while((position = evaluated.find(entry.first, position)) != std::string::npos) {
-					const size_t comma = differentiated_expression ? evaluated.find(',') : std::string::npos;
-					if(comma != std::string::npos && position >= comma) break;
-					const bool left = position == 0 || (!std::isalnum(static_cast<unsigned char>(evaluated[position - 1])) && evaluated[position - 1] != '_');
-					size_t end = position + entry.first.size();
-					const bool right = end == evaluated.size() || (!std::isalnum(static_cast<unsigned char>(evaluated[end])) && evaluated[end] != '_');
-					if(left && right) {
-						std::string replacement = entry.second.scalar;
-						if(entry.second.sequence) {
-							replacement = "[";
-							for(size_t item = 0; item < entry.second.items.size(); ++item) {
-								if(item > 0) replacement += ", ";
-								replacement += entry.second.items[item].scalar;
-							}
-							replacement += "]";
-						}
-						evaluated.replace(position, entry.first.size(), replacement);
-						position += replacement.size();
-					} else position = end;
-				}
 			}
-			MathStructure value_structure;
-			std::string extension_display;
-			const bool extension_calculated = notes_vector_extension(calculator, evaluated, evaluation_options, print_options, extension_display);
-			bool calculated = extension_calculated || calculator.calculate(&value_structure, evaluated, 500, evaluation_options);
-			if((!calculated || value_structure.isUndefined()) && evaluated.rfind("diff(", 0) == 0 && evaluated.find(',') == std::string::npos) {
-				const size_t begin = evaluated.find('(') + 1;
-				const size_t end = evaluated.rfind(')');
-				if(end > begin) {
-					const std::string inner = evaluated.substr(begin, end - begin);
-					std::string variable;
-					for(size_t p = 0; p < inner.size(); ++p) {
-						if(std::isalpha(static_cast<unsigned char>(inner[p])) || inner[p] == '_') {
-							size_t e = p + 1;
-							while(e < inner.size() && (std::isalnum(static_cast<unsigned char>(inner[e])) || inner[e] == '_')) ++e;
-							const std::string candidate = inner.substr(p, e - p);
-							if(candidate != "diff") { variable = candidate; break; }
-							p = e - 1;
-						}
-					}
-					if(!variable.empty()) {
-						const bool aliased_variable = variable == "q" || variable == "w";
-						const std::string differentiation_variable = aliased_variable ? "notes_diff_symbol" : variable;
-						std::string differentiated_inner = inner;
-						if(aliased_variable) {
-							size_t qpos = 0;
-							while((qpos = differentiated_inner.find(variable, qpos)) != std::string::npos) {
-								const bool left = qpos == 0 || !(std::isalnum(static_cast<unsigned char>(differentiated_inner[qpos - 1])) || differentiated_inner[qpos - 1] == '_');
-								const size_t qend = qpos + variable.size();
-								const bool right = qend == differentiated_inner.size() || !(std::isalnum(static_cast<unsigned char>(differentiated_inner[qend])) || differentiated_inner[qend] == '_');
-								if(left && right) { differentiated_inner.replace(qpos, variable.size(), differentiation_variable); qpos += differentiation_variable.size(); } else ++qpos;
-							}
-						}
-						const std::string explicit_diff = "diff(" + differentiated_inner + "," + differentiation_variable + ")";
-						calculator.clearMessages();
-						calculated = calculator.calculate(&value_structure, explicit_diff, 500, evaluation_options);
-					}
-				}
-			}
+			evaluated = substitute_script_scope(evaluated, scope);
+			ScriptCalculation calculation = calculate_script_expression(calculator, evaluated, evaluation_options, print_options);
+			MathStructure &value_structure = calculation.value;
+			std::string &extension_display = calculation.extension_display;
+			const bool extension_calculated = calculation.extension_calculated;
+			bool calculated = calculation.calculated;
+			if((!calculated || value_structure.isUndefined()) && evaluated.rfind("diff(", 0) == 0)
+				calculated = retry_script_differentiation(calculator, evaluated, value_structure, evaluation_options);
 			if(!calculated || (!extension_calculated && value_structure.isUndefined())) { evaluation_error = "undefined"; return false; }
 			value.scalar = extension_calculated ? extension_display : value_structure.print(print_options, false, false, TAG_TYPE_TERMINAL);
-			normalize_symbolic_display(value.scalar);
-			const std::string alias = "notes_diff_symbol";
-			for(const std::string &symbol : {std::string("q"), std::string("w")}) {
-				size_t alias_pos = 0;
-				while((alias_pos = value.scalar.find(alias, alias_pos)) != std::string::npos) { value.scalar.replace(alias_pos, alias.size(), symbol); alias_pos += symbol.size(); }
-			}
+			normalize_script_value(value.scalar);
 			value.sequence = false;
-			if(display && active_output && !value.scalar.empty() && executor.currentLine() > 0 && executor.currentLine() <= output.size())
-				(*active_output)[executor.currentLine() - 1].push_back(value.scalar);
+			if(display && execution.active_output && !value.scalar.empty() && executor.currentLine() > 0 && executor.currentLine() <= output.size())
+				(*execution.active_output)[executor.currentLine() - 1].push_back(value.scalar);
 			return true;
 		};
-		active_output = &output;
-		if(!executor.execute(program, evaluate, error, environment)) {
+		execution.active_output = &output;
+		qalc_script::Executor::Checkpoint checkpoint = [&](unsigned int line, const qalc_script::Executor::Environment &scope) {
+			if(script_state == nullptr) return;
+			ScriptState::Boundary boundary;
+			boundary.environment = scope;
+			boundary.calculator_checkpoint = save_calculator_checkpoint(calculator);
+			script_state->boundaries[line] = std::move(boundary);
+		};
+		if(!run_script_range(program, execution_first, execution_last, evaluate, error, environment, checkpoint, executor)) {
 			failed_line = executor.currentLine();
 			if(failed_line > 0 && failed_line <= results.size()) {
 				results[failed_line - 1].has_error = true;
@@ -594,6 +705,11 @@ std::vector<LineResult> evaluate_note(Calculator &calculator, const std::vector<
 		for(size_t i = 0; i < results.size(); ++i) {
 			if(results[i].has_error) results[i].display = "error";
 			else if(contains_string_result(results[i].display)) results[i].display = "undefined";
+		}
+		if(script_state != nullptr) {
+			script_state->environment = environment;
+			script_state->calculator_checkpoint = save_calculator_checkpoint(calculator);
+			script_state->executed_lines = execution.executed_lines;
 		}
 		return results;
 	}
@@ -974,7 +1090,31 @@ std::vector<LineResult> NoteEvaluationSession::evaluate(Calculator &calculator, 
 		}
 	}
 	std::fprintf(stderr, "[notes-engine] full evaluate path\n");
-	results_ = evaluate_note(calculator, lines);
+	bool unchanged_context = changed_line >= 0 && lines_.size() == lines.size();
+	if(unchanged_context) {
+		for(size_t index = 0; index < lines.size(); ++index) {
+			if(static_cast<int>(index) != changed_line && lines_[index] != lines[index]) {
+				unchanged_context = false;
+				break;
+			}
+		}
+	}
+	const bool can_resume_script = unchanged_context && !script_state_.boundaries.empty();
+	ScriptState next_script_state;
+	const std::vector<LineResult> recalculated = evaluate_note(calculator, lines, &next_script_state,
+		can_resume_script ? &script_state_ : nullptr, changed_line);
+	if(can_resume_script) {
+		std::vector<LineResult> merged = results_;
+		for(const unsigned int index : next_script_state.executed_lines)
+			if(index < recalculated.size() && index < merged.size()) merged[index] = recalculated[index];
+		results_ = merged;
+		for(const auto &entry : next_script_state.boundaries) script_state_.boundaries[entry.first] = entry.second;
+		script_state_.environment = next_script_state.environment;
+		script_state_.calculator_checkpoint = next_script_state.calculator_checkpoint;
+	} else {
+		script_state_ = std::move(next_script_state);
+		results_ = recalculated;
+	}
 	lines_ = lines;
 	assignment_values_.clear();
 	for(size_t i = 0; i < lines.size() && i < results_.size(); ++i) {

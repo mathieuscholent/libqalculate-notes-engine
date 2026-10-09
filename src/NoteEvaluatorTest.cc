@@ -92,6 +92,42 @@ int main() {
 	assert(after_transitive_variable_edit[1].display == "6");
 	assert(after_transitive_variable_edit[2].display == "7");
 	assert(after_transitive_variable_edit[3].display == "8");
+	qalc_notes::ScriptState script_state;
+	Calculator script_calculator;
+	script_calculator.loadGlobalDefinitions();
+	const auto script_results = evaluate_note(script_calculator, {
+		"values = [1, 2, 3]", "for elt in values:", "  elt", "answer = 9"
+	}, &script_state);
+	assert(script_results.size() == 4);
+	assert(script_results[2].display == "[1 · 2 · 3]");
+	assert(script_state.boundaries.find(1) != script_state.boundaries.end());
+	assert(script_state.boundaries.find(2) != script_state.boundaries.end());
+	qalc_script::Executor::Environment restored_environment;
+	Calculator restored_calculator;
+	assert(qalc_notes::restore_script_state(
+		restored_calculator, script_state, restored_environment));
+	qalc_script::Parser script_parser;
+	std::vector<qalc_script::Statement> script_program;
+	std::string script_error;
+	assert(script_parser.parse({
+		"values = [1, 2, 3]", "for elt in values:", "  if elt > 1:", "    elt"
+	}, script_program, script_error));
+	const auto loop_range = qalc_script::Executor::rangeForLine(script_program, 4);
+	assert(loop_range.first == 1 && loop_range.second == 2);
+	qalc_notes::NoteEvaluationSession script_session;
+	Calculator script_session_calculator;
+	script_session_calculator.loadGlobalDefinitions();
+	const std::vector<std::string> script_lines = {
+		"values = [1, 2, 3]", "for elt in values:", "  elt", "unrelated = 42"
+	};
+	const auto script_first = script_session.evaluate(script_session_calculator, script_lines);
+	assert(script_first[2].display == "[1 · 2 · 3]");
+	assert(script_first[3].display == "42");
+	const auto script_second = script_session.evaluate(script_session_calculator, {
+		"values = [1, 2, 3]", "for elt in values:", "  elt + 1", "unrelated = 42"
+	}, 2);
+	assert(script_second[2].display == "[2 · 3 · 4]");
+	assert(script_second[3].display == "42");
 	const std::vector<std::string> independent_lines = {"x = 5", "2 + 2", "y = x + 1"};
 	const auto independent_first = session.evaluate(session_calculator, independent_lines);
 	assert(independent_first[1].display == "4");

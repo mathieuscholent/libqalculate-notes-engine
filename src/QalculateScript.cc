@@ -2,6 +2,8 @@
 
 #include <cctype>
 #include <cstdlib>
+#include <algorithm>
+#include <climits>
 #include <sstream>
 
 namespace qalc_script {
@@ -282,6 +284,27 @@ bool Executor::execute(const std::vector<Statement> &program, const Evaluate &ev
 		return true;
 	};
 	return run(program, environment);
+}
+
+bool Executor::executeRange(const std::vector<Statement> &program, size_t first, size_t last,
+	const Evaluate &evaluate, std::string &error, Environment &environment,
+	const Checkpoint &checkpoint) const {
+	if(first > last || first > program.size()) return true;
+	last = std::min(last, program.size());
+	std::vector<Statement> range(program.begin() + static_cast<std::ptrdiff_t>(first),
+		program.begin() + static_cast<std::ptrdiff_t>(last));
+	return execute(range, evaluate, error, environment, checkpoint);
+}
+
+std::pair<size_t, size_t> Executor::rangeForLine(const std::vector<Statement> &program,
+	unsigned int source_line) {
+	if(program.empty()) return std::make_pair(0, 0);
+	for(size_t index = 0; index < program.size(); ++index) {
+		const unsigned int next_line = index + 1 < program.size() ? program[index + 1].line : UINT_MAX;
+		if(source_line >= program[index].line && source_line < next_line)
+			return std::make_pair(index, index + 1);
+	}
+	return std::make_pair(0, program.size());
 }
 
 }
