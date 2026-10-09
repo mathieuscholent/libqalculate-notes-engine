@@ -5,10 +5,13 @@
 #include "QalculateScript.h"
 
 #include <string>
+#include <functional>
 #include <map>
 #include <vector>
 
 namespace qalc_notes {
+
+using Cancellation = std::function<bool()>;
 
 struct LineResult {
 	std::string display;
@@ -45,7 +48,7 @@ struct ScriptExecutionContext {
 // returned strings without reinterpreting expressions or errors.
 std::vector<LineResult> evaluate_note(Calculator &calculator, const std::vector<std::string> &lines,
 	ScriptState *script_state = nullptr, const ScriptState *input_state = nullptr,
-	int changed_line = -1);
+	int changed_line = -1, const Cancellation &cancelled = {});
 
 // XML checkpoints contain only temporary user definitions, leaving global
 // Qalculate definitions untouched. They can be captured before a block and
@@ -61,7 +64,8 @@ bool restore_script_state(Calculator &calculator, const ScriptState &state,
 // safely.
 class NoteEvaluationSession {
 public:
-	std::vector<LineResult> evaluate(Calculator &calculator, const std::vector<std::string> &lines, int changed_line = -1);
+	std::vector<LineResult> evaluate(Calculator &calculator, const std::vector<std::string> &lines,
+		int changed_line = -1, const Cancellation &cancelled = {});
 private:
 	std::vector<std::string> lines_;
 	std::vector<LineResult> results_;

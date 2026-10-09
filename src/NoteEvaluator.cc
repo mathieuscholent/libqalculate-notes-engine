@@ -543,8 +543,10 @@ static bool define_function(Calculator &calculator, std::string source) {
 }
 
 std::vector<LineResult> evaluate_note(Calculator &calculator, const std::vector<std::string> &lines,
-	ScriptState *script_state, const ScriptState *input_state, int changed_line) {
+	ScriptState *script_state, const ScriptState *input_state, int changed_line,
+	const Cancellation &cancelled) {
 	std::fprintf(stderr, "[notes-engine] evaluate_note begin lines=%zu\n", lines.size());
+	if(cancelled && cancelled()) return std::vector<LineResult>(lines.size());
 	std::vector<LineResult> results;
 	results.reserve(lines.size());
 	// Re-evaluation must start from a clean note state. The GUI reuses one
@@ -684,6 +686,7 @@ std::vector<LineResult> evaluate_note(Calculator &calculator, const std::vector<
 		qalc_script::Executor executor;
 		unsigned int &failed_line = execution.failed_line;
 		qalc_script::Executor::Evaluate evaluate = [&](const std::string &expression, const qalc_script::Executor::Environment &scope, qalc_script::Value &value, std::string &evaluation_error, bool display) {
+			if(cancelled && cancelled()) { evaluation_error = "cancelled"; return false; }
 			std::string evaluated = expression;
 			for(const auto &entry : scope) {
 				if(entry.second.undefined && contains_identifier(evaluated, entry.first)) {
@@ -715,6 +718,7 @@ std::vector<LineResult> evaluate_note(Calculator &calculator, const std::vector<
 			boundary.calculator_checkpoint = save_calculator_checkpoint(calculator);
 			script_state->boundaries[line] = std::move(boundary);
 		};
+		if(cancelled && cancelled()) return std::vector<LineResult>(lines.size());
 		if(!run_script_range(program, execution_first, execution_last, evaluate, error, environment, checkpoint, executor)) {
 			failed_line = executor.currentLine();
 			if(failed_line > 0 && failed_line <= results.size()) {
@@ -894,7 +898,9 @@ std::vector<LineResult> evaluate_note(Calculator &calculator, const std::vector<
 	return results;
 }
 
-std::vector<LineResult> NoteEvaluationSession::evaluate(Calculator &calculator, const std::vector<std::string> &lines, int changed_line) {
+std::vector<LineResult> NoteEvaluationSession::evaluate(Calculator &calculator, const std::vector<std::string> &lines,
+	int changed_line, const Cancellation &cancelled) {
+	if(cancelled && cancelled()) return {};
 	std::fprintf(stderr, "[notes-engine] session begin old=%zu new=%zu changed=%d\n", lines_.size(), lines.size(), changed_line);
 	if(lines == lines_ && results_.size() == lines.size()) return results_;
 	const bool ordinary_independent = std::all_of(lines.begin(), lines.end(), [](const std::string &line) {
@@ -1131,7 +1137,7 @@ std::vector<LineResult> NoteEvaluationSession::evaluate(Calculator &calculator, 
 	const bool can_resume_script = unchanged_context && !script_state_.boundaries.empty();
 	ScriptState next_script_state;
 	const std::vector<LineResult> recalculated = evaluate_note(calculator, lines, &next_script_state,
-		can_resume_script ? &script_state_ : nullptr, changed_line);
+		can_resume_script ? &script_state_ : nullptr, changed_line, cancelled);
 	if(can_resume_script) {
 		std::vector<LineResult> merged = results_;
 		for(const unsigned int index : next_script_state.executed_lines)
