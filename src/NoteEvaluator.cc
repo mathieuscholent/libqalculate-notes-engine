@@ -211,7 +211,8 @@ static void merge_script_rows(std::vector<LineResult> &results,
 	const std::vector<std::vector<std::string>> &output,
 	const std::vector<LineResult> &baseline,
 	const std::vector<bool> &function_lines,
-	const std::vector<bool> &defined_functions) {
+	const std::vector<bool> &defined_functions,
+	const std::vector<bool> &affected_rows) {
 	for(size_t index = 0; index < results.size(); ++index) {
 		if(function_lines[index]) results[index].display = defined_functions[index] ? "defined" : "undefined";
 		else if(!output[index].empty()) {
@@ -221,6 +222,10 @@ static void merge_script_rows(std::vector<LineResult> &results,
 				results[index].display += output[index][value];
 			}
 			if(output[index].size() > 1) results[index].display += "]";
+		} else if(index < affected_rows.size() && affected_rows[index]) {
+			// This row was executed but produced no value. Do not resurrect a
+			// stale cached result when a condition/loop now has no output.
+			results[index] = LineResult{};
 		} else if(index < baseline.size()) results[index] = baseline[index];
 	}
 }
@@ -705,7 +710,11 @@ std::vector<LineResult> evaluate_note(Calculator &calculator, const std::vector<
 				// pass after a script condition fails. Those values are stale.
 			}
 		}
-		merge_script_rows(results, output, baseline, function_lines, defined_functions);
+		std::vector<bool> affected_rows(lines.size(), input_state == nullptr);
+		for(const unsigned int line : execution.executed_lines) {
+			if(line < affected_rows.size()) affected_rows[line] = true;
+		}
+		merge_script_rows(results, output, baseline, function_lines, defined_functions, affected_rows);
 		// A failed script statement is local to that statement. Do not mark
 		// later or unrelated baseline lines undefined: ordinary note lines have
 		// independent scope and their already-computed results remain valid.

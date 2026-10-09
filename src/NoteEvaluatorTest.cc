@@ -133,6 +133,19 @@ int main() {
 	}, 2);
 	assert(script_third[2].display == "[3 · 4 · 5]");
 	assert(script_third[3].display == "42");
+	qalc_notes::NoteEvaluationSession empty_output_session;
+	Calculator empty_output_calculator;
+	empty_output_calculator.loadGlobalDefinitions();
+	const std::vector<std::string> conditional_script = {
+		"values = [1, 2]", "for elt in values:", "  if elt > 0:", "    elt", "unrelated = 42"
+	};
+	const auto conditional_first = empty_output_session.evaluate(empty_output_calculator, conditional_script);
+	assert(conditional_first[3].display == "[1 · 2]");
+	const auto conditional_empty = empty_output_session.evaluate(empty_output_calculator, {
+		"values = [1, 2]", "for elt in values:", "  if elt > 3:", "    elt", "unrelated = 42"
+	}, 2);
+	assert(conditional_empty[3].display.empty());
+	assert(conditional_empty[4].display == "42");
 	const std::vector<std::string> independent_lines = {"x = 5", "2 + 2", "y = x + 1"};
 	const auto independent_first = session.evaluate(session_calculator, independent_lines);
 	assert(independent_first[1].display == "4");
