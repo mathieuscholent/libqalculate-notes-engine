@@ -146,6 +146,23 @@ int main() {
 	}, 2);
 	assert(conditional_empty[3].display.empty());
 	assert(conditional_empty[4].display == "42");
+	qalc_notes::NoteEvaluationSession function_script_session;
+	Calculator function_script_calculator;
+	function_script_calculator.loadGlobalDefinitions();
+	const auto function_script_first = function_script_session.evaluate(function_script_calculator, {
+		"double(x) = x * 2", "values = [1, 2, 3]", "for elt in values:",
+		"  double(elt)", "answer = 99"
+	});
+	assert(function_script_first[0].display == "defined");
+	assert(function_script_first[3].display == "[2 · 4 · 6]");
+	assert(function_script_first[4].display == "99");
+	const auto function_script_second = function_script_session.evaluate(function_script_calculator, {
+		"double(x) = x * 3", "values = [1, 2, 3]", "for elt in values:",
+		"  double(elt)", "answer = 99"
+	}, 0);
+	assert(function_script_second[0].display == "defined");
+	assert(function_script_second[3].display == "[3 · 6 · 9]");
+	assert(function_script_second[4].display == "99");
 	const std::vector<std::string> independent_lines = {"x = 5", "2 + 2", "y = x + 1"};
 	const auto independent_first = session.evaluate(session_calculator, independent_lines);
 	assert(independent_first[1].display == "4");
